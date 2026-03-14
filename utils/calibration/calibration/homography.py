@@ -420,6 +420,14 @@ class HomographyCalibrator:
 
         return float(img[0]), float(img[1])
 
+    def set_homography(self, H):
+
+        if H is None:
+            return
+
+        self.H = np.array(H, dtype=np.float64)
+        self.H_base = self.H.copy()
+
     # -----------------------------
     # Image-aware ML model
     # -----------------------------

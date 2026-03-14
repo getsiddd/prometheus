@@ -58,7 +58,10 @@ GUI = {
     "SHOW_FLOOR_GRID": True,
 
     # 3D scene
-    "SHOW_SCENE3D": True
+    "SHOW_SCENE3D": True,
+
+    # Reports
+    "SHOW_CALIBRATION_REPORT": True
 }
 
 # ============================================================
@@ -73,4 +76,21 @@ KEY_BINDINGS = {
     "toggle_tag_id": ord('i'),
     "toggle_world_coords": ord('w'),
     "toggle_grid": ord('g'),
+    "toggle_report": ord('r'),
+}
+
+
+CALIBRATION_PIPELINE = {
+    "enable_camera_shift_correction": True,
+    "enable_world_stabilizer": True,
+    "stabilizer_alpha": 0.35,
+    "stabilizer_history": 8,
+    "stabilizer_max_jump_m": 1.5,
+    "enable_cad_alignment": True,
+    "cad_alignment_file": "cad_alignment.yaml",
+    "enable_sfm_refinement": True,
+    "sfm_max_frames": 12,
+    "sfm_frame_stride": 7,
+    "sfm_min_inliers": 35,
+    "sfm_resize_width": 960,
 }

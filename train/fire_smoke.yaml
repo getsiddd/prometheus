@@ -1,0 +1,7 @@
+names:
+  0: fire
+  1: smoke
+nc: 2
+path: fire_smoke_clean
+train: train/images
+val: val/images

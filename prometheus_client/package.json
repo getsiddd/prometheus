@@ -1,0 +1,75 @@
+{
+  "name": "prometheus-ai",
+  "version": "1.0.0",
+  "description": "Prometheus AI Dashboard",
+  "main": "main.js",
+  "homepage": "https://prometheus.ai",
+  "scripts": {
+    "start": "electron . --no-sandbox --disable-setuid-sandbox --ozone-platform=wayland",
+    "build": "electron-builder",
+    "build:all": "electron-builder -w -l",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac"
+  },
+  "author": {
+    "name": "Prometheus",
+    "email": "admin@prometheus.ai"
+  },
+  "license": "MIT",
+  "email": "siddharth.t@shreedurgasyntex.com",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "com.prometheus.ai",
+    "productName": "Prometheus AI",
+    "asar": true,
+
+    "files": [
+      "**/*",
+      "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md}",
+      "!node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!node_modules/*.d.ts",
+      "!node_modules/.bin"
+    ],
+
+    "directories": {
+      "buildResources": "assets",
+      "output": "dist"
+    },
+
+    "win": {
+      "icon": "assets/prometheus.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Prometheus AI"
+    },
+
+    "linux": {
+      "icon": "assets/icons",
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Utility",
+      "maintainer": "Prometheus <admin@prometheus.ai>"
+    },
+
+    "mac": {
+      "icon": "assets/prometheus.icns",
+      "target": [
+        "dmg"
+      ]
+    }
+  }
+}

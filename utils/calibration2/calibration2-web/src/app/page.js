@@ -2547,6 +2547,10 @@ export function CalibrationConsole({
         return await saveSnapshotDataUrl(liveImageDataUrl, "live feed");
       }
 
+      if (!sourceUrl) {
+        throw new Error("Snapshot capture failed: live feed frame unavailable and source URL is empty.");
+      }
+
       const res = await fetch("/api/calibration/web/snapshot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

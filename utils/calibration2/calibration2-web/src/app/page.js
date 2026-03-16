@@ -175,6 +175,8 @@ export function CalibrationConsole({
   const [liveKeypointsImageSize, setLiveKeypointsImageSize] = useState({ width: 1, height: 1 });
   const [liveKeypointsRunning, setLiveKeypointsRunning] = useState(false);
   const liveKeypointsPollRef = useRef(null);
+  const autoGroundPrepRunningRef = useRef(false);
+  const autoGroundPrepDoneKeyRef = useRef("");
   const [intrinsicSessionId, setIntrinsicSessionId] = useState("default");
   const [intrinsicStatus, setIntrinsicStatus] = useState("No intrinsic samples captured yet.");
   const [intrinsicSampleCount, setIntrinsicSampleCount] = useState(0);
@@ -2017,31 +2019,6 @@ export function CalibrationConsole({
   }
 
   async function runStageCard(stage) {
-    // Ground-plane: auto-capture reference frame, then detect humans + extract
-    // features before starting the stage job.
-    if (stage === "ground-plane") {
-      setStageJobState((prev) => ({
-        ...prev,
-        [stage]: { status: "starting", progress: 0, logs: ["Auto-capturing reference frame…"] },
-      }));
-      try {
-        const frameUrl = await captureSnapshotWeb();
-        if (frameUrl) {
-          // fire-and-forget: detection + feature extraction run in parallel
-          detectAutoGroundPoints().catch((err) =>
-            console.warn("[auto-detect] ground pose:", err)
-          );
-          extractLiveKeypoints(frameUrl).catch((err) =>
-            console.warn("[auto-detect] keypoints:", err)
-          );
-          // Multi-camera auto placement (silent – no error modal if conditions not met)
-          autoPlaceMarkersFromSolvedCameras().catch(() => {});
-        }
-      } catch (_) {
-        // capture failure is non-fatal – the stage can still run
-      }
-    }
-
     const readiness = getStageReadiness(stage);
     if (!readiness.enabled) {
       const msg = readiness.status;
@@ -2653,6 +2630,53 @@ export function CalibrationConsole({
       setLiveKeypointsRunning(false);
     }
   }
+
+  async function runAutoGroundPrep() {
+    const shouldRun = enabledStageSet.has("ground-plane") && (feedEnabled || sourceMode === "webcam");
+    if (!shouldRun) {
+      return;
+    }
+    if (autoGroundPrepRunningRef.current) {
+      return;
+    }
+
+    const prepKey = `${activeProjectCameraId || "standalone"}|${sourceMode}|${sourceMode === "webcam" ? "__webcam__" : sourceUrl}`;
+    if (autoGroundPrepDoneKeyRef.current === prepKey) {
+      return;
+    }
+
+    autoGroundPrepRunningRef.current = true;
+    try {
+      setAutoGroundStatus("Auto-preparing ground-plane inputs from live feed...");
+      const frameUrl = await captureSnapshotWeb();
+      if (!frameUrl) {
+        return;
+      }
+
+      await Promise.allSettled([
+        detectAutoGroundPoints(),
+        extractLiveKeypoints(frameUrl),
+        autoPlaceMarkersFromSolvedCameras(),
+      ]);
+
+      autoGroundPrepDoneKeyRef.current = prepKey;
+    } finally {
+      autoGroundPrepRunningRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    const shouldRun = enabledStageSet.has("ground-plane") && (feedEnabled || sourceMode === "webcam");
+    if (!shouldRun) {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => {
+      runAutoGroundPrep().catch(() => {});
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [enabledStageSet, feedEnabled, sourceMode, sourceUrl, activeProjectCameraId]);
 
   // Poll live features every 4 s while the ground-plane section is active
   // eslint-disable-next-line react-hooks/exhaustive-deps

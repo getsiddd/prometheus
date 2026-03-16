@@ -331,7 +331,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
           <div className="text-xs text-zinc-400">
             Click directly on the live feed above to pick ground points.
             AI human detection, feature extraction, and multi-camera marker placement
-            run automatically when <em>Run Ground Plane Stage</em> is started.
+            run automatically while this step is active (before <em>Run Ground Plane Stage</em>).
             {liveKeypointsRunning ? <span className="ml-2 text-indigo-400">● extracting features…</span> : null}
             {liveKeypoints.length > 0 && !liveKeypointsRunning ? <span className="ml-2 text-indigo-300">{liveKeypoints.length} live features</span> : null}
           </div>

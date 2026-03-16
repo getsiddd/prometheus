@@ -72,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_intr.add_argument("--checkerboard", default="9x6")
     p_intr.add_argument("--square-size", type=float, default=0.024)
     p_intr.add_argument("--output-npz", required=True)
+    p_intr.add_argument("--camera-type", default="pinhole", choices=["pinhole", "fisheye", "wide-angle", "cctv"])
 
     p_pdf = sub.add_parser("checkerboard-pdf")
     p_pdf.add_argument("--checkerboard", default="9x6")
@@ -128,7 +129,7 @@ def main() -> None:
         return
 
     if args.cmd == "intrinsic-solve":
-        result = backend.solve_intrinsic(args.images_dir, args.checkerboard, args.square_size, args.output_npz)
+        result = backend.solve_intrinsic(args.images_dir, args.checkerboard, args.square_size, args.output_npz, camera_type=args.camera_type)
         print(json.dumps({"ok": True, "result": result, "output": args.output_npz}))
         return
 

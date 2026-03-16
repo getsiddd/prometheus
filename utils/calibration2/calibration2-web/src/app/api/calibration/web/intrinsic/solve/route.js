@@ -12,6 +12,8 @@ export async function POST(req) {
   const sessionId = body?.sessionId || "default";
   const checkerboard = body?.checkerboard || "9x6";
   const squareSize = Number(body?.squareSize ?? 0.024);
+  const rawCameraType = String(body?.cameraType || "pinhole").toLowerCase();
+  const cameraType = ["fisheye", "wide-angle", "cctv"].includes(rawCameraType) ? rawCameraType : "pinhole";
 
   const imagesDir = path.join(process.cwd(), "uploads", "intrinsic", sessionId);
   const outputNpZDir = path.join(process.cwd(), "uploads", "intrinsic-results");
@@ -30,6 +32,8 @@ export async function POST(req) {
     String(squareSize),
     "--output-npz",
     outputNpz,
+    "--camera-type",
+    cameraType,
   ]);
 
   const parsed = parseLastJson(solved.out);

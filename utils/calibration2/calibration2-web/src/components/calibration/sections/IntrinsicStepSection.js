@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
+
 export default function IntrinsicStepSection({ data, actions, refs, renderStageStatus }) {
   const {
     intrinsicAllowed,
@@ -44,6 +46,96 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
   } = actions;
 
   const { intrinsicVideoRef } = refs;
+
+  // ---- live checkerboard overlay (webcam mode) ----
+  const overlayCanvasRef = useRef(null);
+  const [liveDetect, setLiveDetect] = useState({ found: false, corners: [] });
+  const detectLoopRef = useRef(null);
+
+  useEffect(() => {
+    // Only run detection loop when playing webcam in intrinsic section
+    if (sourceMode !== "webcam") {
+      setLiveDetect({ found: false, corners: [] });
+      return;
+    }
+
+    function scheduleDetect() {
+      detectLoopRef.current = setTimeout(async () => {
+        const video = intrinsicVideoRef?.current;
+        if (!video || video.videoWidth === 0 || video.readyState < 2) {
+          scheduleDetect();
+          return;
+        }
+        try {
+          const tmp = document.createElement("canvas");
+          tmp.width = video.videoWidth;
+          tmp.height = video.videoHeight;
+          tmp.getContext("2d").drawImage(video, 0, 0);
+          const dataUrl = tmp.toDataURL("image/jpeg", 0.75);
+          const res = await fetch("/api/calibration/web/intrinsic/detect-live", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageDataUrl: dataUrl, checkerboard }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setLiveDetect({
+              found: Boolean(data.found),
+              corners: Array.isArray(data.corners_px) ? data.corners_px : [],
+              imgW: data.image_width || video.videoWidth,
+              imgH: data.image_height || video.videoHeight,
+            });
+          }
+        } catch { /* ignore */ }
+        scheduleDetect();
+      }, 500); // ~2fps — lightweight polling
+    }
+
+    scheduleDetect();
+    return () => clearTimeout(detectLoopRef.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceMode, checkerboard]);
+
+  // Draw corners onto overlay canvas whenever liveDetect changes
+  useEffect(() => {
+    const canvas = overlayCanvasRef.current;
+    const video = intrinsicVideoRef?.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!liveDetect.found || !liveDetect.corners.length) return;
+    if (!video || video.videoWidth === 0) return;
+
+    // Scale corners from video native resolution to display size
+    const scaleX = canvas.width / (liveDetect.imgW || video.videoWidth);
+    const scaleY = canvas.height / (liveDetect.imgH || video.videoHeight);
+
+    // Draw corner dots
+    liveDetect.corners.forEach(([cx, cy], idx) => {
+      const x = cx * scaleX;
+      const y = cy * scaleY;
+      const hue = Math.round((idx / liveDetect.corners.length) * 300);
+      ctx.fillStyle = `hsl(${hue}, 100%, 60%)`;
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Connect corners with lines to show the grid
+    if (liveDetect.corners.length > 1) {
+      ctx.strokeStyle = "rgba(100,255,100,0.6)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      liveDetect.corners.forEach(([cx, cy], idx) => {
+        const x = cx * scaleX;
+        const y = cy * scaleY;
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveDetect]);
   const K = intrinsicSolveResult?.K;
   const D = intrinsicSolveResult?.D;
   const fx = typeof K?.[0]?.[0] === "number" ? K[0][0] : null;
@@ -194,7 +286,31 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
         <div className="space-y-2">
           <div className="text-sm text-zinc-300">Live Camera Feed</div>
           {sourceMode === "webcam" ? (
-            <video ref={intrinsicVideoRef} autoPlay playsInline muted className="w-full max-h-[360px] rounded border border-zinc-700 object-contain bg-black" />
+            <div className="relative">
+              <video
+                ref={intrinsicVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full max-h-[360px] rounded border border-zinc-700 object-contain bg-black"
+              />
+              <canvas
+                ref={overlayCanvasRef}
+                width={960}
+                height={540}
+                className="pointer-events-none absolute inset-0 h-full w-full rounded"
+              />
+              {liveDetect.found && (
+                <div className="absolute bottom-2 left-2 rounded bg-emerald-900/80 px-2 py-0.5 text-xs text-emerald-300">
+                  ✓ Checkerboard detected ({liveDetect.corners.length} corners)
+                </div>
+              )}
+              {!liveDetect.found && (
+                <div className="absolute bottom-2 left-2 rounded bg-zinc-900/70 px-2 py-0.5 text-xs text-zinc-400">
+                  Looking for checkerboard…
+                </div>
+              )}
+            </div>
           ) : feedEnabled ? (
             <img src={liveFeedSrc} onError={onFeedError} onLoad={clearFeedError} alt="Intrinsic feed" className="w-full max-h-[360px] rounded border border-zinc-700 object-contain bg-black" />
           ) : (

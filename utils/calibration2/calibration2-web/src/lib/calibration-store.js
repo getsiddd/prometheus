@@ -146,6 +146,9 @@ async function runIntrinsicWebSolve(id, stage, config) {
     },
   });
 
+  const cameraTypeArg = String(config?.cameraType || "pinhole").toLowerCase();
+  const cameraTypeCli = ["fisheye", "wide-angle", "cctv"].includes(cameraTypeArg) ? cameraTypeArg : "pinhole";
+
   const solved = await runPython([
     scriptPath,
     "intrinsic-solve",
@@ -157,6 +160,8 @@ async function runIntrinsicWebSolve(id, stage, config) {
     String(config?.squareSize ?? 0.024),
     "--output-npz",
     outputNpz,
+    "--camera-type",
+    cameraTypeCli,
   ]);
 
   const parsed = parseLastJson(solved.out) || {};

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ProjectEntryPage from "@/components/project/ProjectEntryPage";
 import StageStatusCard from "@/components/calibration/StageStatusCard";
+import { deriveCameraPosition } from "@/components/calibration/CameraPositionPanel";
 import CombinedSequenceSection from "@/components/calibration/sections/CombinedSequenceSection";
 import CurrentJobSection from "@/components/calibration/sections/CurrentJobSection";
 import Cad3dStepSection from "@/components/calibration/sections/Cad3dStepSection";
@@ -179,6 +180,7 @@ export function CalibrationConsole({
   const [stageOutputLoading, setStageOutputLoading] = useState({});
   const [intrinsicSolveResult, setIntrinsicSolveResult] = useState(null);
   const [pnpSolveResult, setPnpSolveResult] = useState(null);
+  const cameraPosition = useMemo(() => deriveCameraPosition(pnpSolveResult), [pnpSolveResult]);
   const [snapshotNaturalSize, setSnapshotNaturalSize] = useState({ width: 1, height: 1 });
   const [draggingImagePointIndex, setDraggingImagePointIndex] = useState(null);
 
@@ -2027,6 +2029,7 @@ export function CalibrationConsole({
           sessionId: intrinsicSessionId,
           checkerboard,
           squareSize,
+          cameraType,
         }),
       });
       const data = await res.json();
@@ -3056,6 +3059,8 @@ export function CalibrationConsole({
             dwgMessage,
             segments,
             stageOutputGroundPlane: stageOutputs["ground-plane"],
+            pnpSolveResult,
+            cameraPosition,
           }}
           actions={{
             setGroundPickMode,

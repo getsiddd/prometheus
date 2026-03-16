@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldPoints = [], validationWorldPoints = [], title = "" }) {
+export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldPoints = [], validationWorldPoints = [], title = "", cameraPosition = null, cameraIntrinsic = null }) {
   const canvasRef = useRef(null);
   const [yaw, setYaw] = useState(35);
   const [pitch, setPitch] = useState(-28);
@@ -198,12 +198,146 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       ctx.fillText("preview", hp[0] + 8, hp[1] - 8);
     }
 
+    // ---- Camera position overlay ----
+    if (cameraPosition && Array.isArray(cameraPosition.position) && cameraPosition.position.length === 3) {
+      const camWorld = cameraPosition.position;
+      const lookDir = Array.isArray(cameraPosition.lookDir) ? cameraPosition.lookDir : [0, 0, 1];
+      const cp = project(camWorld);
+
+      // Draw camera icon: filled magenta circle with cross
+      ctx.save();
+      ctx.fillStyle = "#d946ef";
+      ctx.strokeStyle = "#4a044e";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cp[0], cp[1], 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // Cross
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(cp[0] - 6, cp[1]); ctx.lineTo(cp[0] + 6, cp[1]); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cp[0], cp[1] - 6); ctx.lineTo(cp[0], cp[1] + 6); ctx.stroke();
+      // Label
+      ctx.fillStyle = "#e879f9";
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillText("CAM", cp[0] + 11, cp[1] - 11);
+      ctx.restore();
+
+      // Look-direction arrow on the ground plane (project look direction to Z=0)
+      const lookXY = [lookDir[0], lookDir[1]];
+      const lenXY = Math.sqrt(lookXY[0] ** 2 + lookXY[1] ** 2);
+      if (lenXY > 0.01) {
+        const scale = Math.max(maxX - minX, maxY - minY) * 0.18 || 2;
+        const arrowEnd = [
+          camWorld[0] + (lookXY[0] / lenXY) * scale,
+          camWorld[1] + (lookXY[1] / lenXY) * scale,
+          camWorld[2],
+        ];
+        const ap = project(arrowEnd);
+        ctx.save();
+        ctx.strokeStyle = "#f0abfc";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(cp[0], cp[1]);
+        ctx.lineTo(ap[0], ap[1]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Arrowhead
+        const angle = Math.atan2(ap[1] - cp[1], ap[0] - cp[0]);
+        ctx.fillStyle = "#f0abfc";
+        ctx.beginPath();
+        ctx.moveTo(ap[0], ap[1]);
+        ctx.lineTo(ap[0] - 10 * Math.cos(angle - 0.4), ap[1] - 10 * Math.sin(angle - 0.4));
+        ctx.lineTo(ap[0] - 10 * Math.cos(angle + 0.4), ap[1] - 10 * Math.sin(angle + 0.4));
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // FOV cone: use K if provided (project image corner rays to Z=0 floor)
+      const K = cameraIntrinsic?.K;
+      const imgW = cameraIntrinsic?.imageWidth || 1280;
+      const imgH = cameraIntrinsic?.imageHeight || 720;
+      if (Array.isArray(K) && K.length === 3 && Array.isArray(K[0])) {
+        const fx = K[0][0]; const fy = K[1][1];
+        const cx2 = K[0][2]; const cy2 = K[1][2];
+        if (fx > 0 && fy > 0) {
+          const corners2d = [[0, 0], [imgW, 0], [imgW, imgH], [0, imgH]];
+          // Rodrigues to R (already computed above, but let's recompute from rvec if available)
+          const rvec = cameraPosition._rvec;
+          const tvec = cameraPosition._tvec;
+          if (Array.isArray(rvec) && Array.isArray(tvec)) {
+            const angle2 = Math.sqrt(rvec[0]**2 + rvec[1]**2 + rvec[2]**2);
+            if (angle2 > 1e-10) {
+              const kk = rvec.map(v => v / angle2);
+              const cc = Math.cos(angle2), ss = Math.sin(angle2), tt = 1 - cc;
+              const Rr = [
+                [tt*kk[0]*kk[0]+cc,       tt*kk[0]*kk[1]-ss*kk[2], tt*kk[0]*kk[2]+ss*kk[1]],
+                [tt*kk[0]*kk[1]+ss*kk[2], tt*kk[1]*kk[1]+cc,       tt*kk[1]*kk[2]-ss*kk[0]],
+                [tt*kk[0]*kk[2]-ss*kk[1], tt*kk[1]*kk[2]+ss*kk[0], tt*kk[2]*kk[2]+cc],
+              ];
+              const RrT = [[Rr[0][0],Rr[1][0],Rr[2][0]],[Rr[0][1],Rr[1][1],Rr[2][1]],[Rr[0][2],Rr[1][2],Rr[2][2]]];
+              const camCentW = [
+                -(Rr[0][0]*tvec[0]+Rr[1][0]*tvec[1]+Rr[2][0]*tvec[2]),
+                -(Rr[0][1]*tvec[0]+Rr[1][1]*tvec[1]+Rr[2][1]*tvec[2]),
+                -(Rr[0][2]*tvec[0]+Rr[1][2]*tvec[1]+Rr[2][2]*tvec[2]),
+              ];
+              const fovScreenPts = [];
+              for (const [u, v] of corners2d) {
+                // Normalized ray in camera space
+                const xn = (u - cx2) / fx;
+                const yn = (v - cy2) / fy;
+                const rayC = [xn, yn, 1.0];
+                // Ray in world space: Rr^T * rayC
+                const rayWx = RrT[0][0]*rayC[0]+RrT[0][1]*rayC[1]+RrT[0][2]*rayC[2];
+                const rayWy = RrT[1][0]*rayC[0]+RrT[1][1]*rayC[1]+RrT[1][2]*rayC[2];
+                const rayWz = RrT[2][0]*rayC[0]+RrT[2][1]*rayC[1]+RrT[2][2]*rayC[2];
+                // Intersect with Z=0 plane: camCentW[2] + t*rayWz = 0
+                if (Math.abs(rayWz) > 1e-6) {
+                  const tt2 = -camCentW[2] / rayWz;
+                  if (tt2 > 0) {
+                    const wx = camCentW[0] + tt2 * rayWx;
+                    const wy = camCentW[1] + tt2 * rayWy;
+                    fovScreenPts.push(project([wx, wy, 0]));
+                  }
+                }
+              }
+              if (fovScreenPts.length === 4) {
+                ctx.save();
+                ctx.strokeStyle = "rgba(217,70,239,0.45)";
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 4]);
+                // Draw cone lines from cam to each corner
+                for (const fp of fovScreenPts) {
+                  ctx.beginPath();
+                  ctx.moveTo(cp[0], cp[1]);
+                  ctx.lineTo(fp[0], fp[1]);
+                  ctx.stroke();
+                }
+                // Connect corners
+                ctx.beginPath();
+                ctx.moveTo(fovScreenPts[0][0], fovScreenPts[0][1]);
+                for (let i = 1; i <= 4; i++) {
+                  ctx.lineTo(fovScreenPts[i % 4][0], fovScreenPts[i % 4][1]);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.restore();
+              }
+            }
+          }
+        }
+      }
+    }
+
     if (title) {
       ctx.fillStyle = "#e5e7eb";
       ctx.font = "13px sans-serif";
       ctx.fillText(title, 12, 22);
     }
-  }, [segments, yaw, pitch, points, zoom, panX, panY, pickedWorldPoints, validationWorldPoints, hoveredPoint, title]);
+  }, [segments, yaw, pitch, points, zoom, panX, panY, pickedWorldPoints, validationWorldPoints, hoveredPoint, title, cameraPosition, cameraIntrinsic]);
 
   function onMouseDown(e) {
     const mode = e.button === 2 ? "pan" : "rotate";

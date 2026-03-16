@@ -78,8 +78,8 @@ class WebCalibrationBackend:
     def detect_checkerboard(self, image: str, checkerboard: str):
         return self.intrinsic_service.detect_checkerboard(image, checkerboard)
 
-    def solve_intrinsic(self, images_dir: str, checkerboard: str, square_size: float, output_npz: str):
-        return self.intrinsic_service.solve_intrinsic(images_dir, checkerboard, square_size, output_npz)
+    def solve_intrinsic(self, images_dir: str, checkerboard: str, square_size: float, output_npz: str, camera_type: str = "pinhole"):
+        return self.intrinsic_service.solve_intrinsic(images_dir, checkerboard, square_size, output_npz, camera_type=camera_type)
 
     def generate_checkerboard_pdf(self, checkerboard: str, square_mm: float, output_pdf: str, margin_mm: float = 10.0):
         return self.intrinsic_service.generate_checkerboard_pdf(checkerboard, square_mm, output_pdf, margin_mm)

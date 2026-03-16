@@ -1,5 +1,6 @@
 "use client";
 
+import CameraPositionPanel from "../CameraPositionPanel";
 import ProjectedCadViewer from "../ProjectedCadViewer";
 
 export default function GroundPlaneStepSection({ data, actions, refs, renderStageStatus }) {
@@ -23,6 +24,8 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     dwgMessage,
     segments,
     stageOutputGroundPlane,
+    pnpSolveResult = null,
+    cameraPosition = null,
   } = data;
 
   const {
@@ -212,7 +215,9 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
             pickedWorldPoints={correspondences.map((c) => c.world)}
             validationWorldPoints={validationPairs.map((p) => p.world)}
             title={pendingImagePoint ? "Pick CAD point for selected image point" : "First select image point, then CAD point"}
+            cameraPosition={cameraPosition}
           />
+          <CameraPositionPanel pnpSolveResult={pnpSolveResult} />
           <label className="block text-xs">Ground Plane Output Path
             <input value={stageOutputGroundPlane || ""} onChange={(e) => setStageOutput("ground-plane", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
           </label>

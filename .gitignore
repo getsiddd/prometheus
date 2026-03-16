@@ -33,3 +33,6 @@ train/runs/
 
 *.log
 *.tmp
+
+.DS_Store
+utils/calibration2/output/

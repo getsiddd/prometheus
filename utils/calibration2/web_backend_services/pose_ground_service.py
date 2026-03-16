@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import urllib.request
 
 import cv2
 import numpy as np
@@ -13,50 +15,86 @@ from .common import CalibrationUtils
 class HumanPoseGroundService:
     """Detect people and suggest likely ground-contact image points using human pose.
 
-    Implementation uses torchvision Keypoint R-CNN and is forced to run on CPU,
+    Implementation uses MediaPipe Pose Landmarker and is forced to run on CPU,
     even if CUDA/MPS is available, per product requirement.
     """
 
-    LEFT_KNEE = 13
-    RIGHT_KNEE = 14
-    LEFT_ANKLE = 15
-    RIGHT_ANKLE = 16
+    LEFT_ANKLE = 27
+    RIGHT_ANKLE = 28
+    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
 
     def __init__(self, utils: CalibrationUtils | None = None):
         self.utils = utils or CalibrationUtils()
-        self._torch = None
         self._model = None
-        self._device = None
+        self._mp = None
+        self._model_info = None
 
     def _ensure_model(self):
-        """Lazily load the pose model on CPU only."""
+        """Lazily load MediaPipe pose model on CPU."""
         if self._model is not None:
-            return self._model, self._torch, self._device
-
-        import torch
-        from torchvision.models.detection import KeypointRCNN_ResNet50_FPN_Weights, keypointrcnn_resnet50_fpn
-
-        # Force CPU-only execution even on Apple Silicon / CUDA systems.
-        device = torch.device("cpu")
-        torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
+            return self._model, self._mp, self._model_info
 
         try:
-            weights = KeypointRCNN_ResNet50_FPN_Weights.DEFAULT
-            model = keypointrcnn_resnet50_fpn(weights=weights, progress=False)
+            import mediapipe as mp
+
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "prometheus", "mediapipe")
+            os.makedirs(cache_dir, exist_ok=True)
+            model_path = os.path.join(cache_dir, "pose_landmarker_lite.task")
+            was_cached_before = os.path.exists(model_path)
+
+            if not was_cached_before:
+                print(f"Downloading MediaPipe Pose model from {self.MODEL_URL}", file=sys.stderr)
+                with urllib.request.urlopen(self.MODEL_URL) as response, open(model_path, "wb") as out_file:
+                    total = int(response.headers.get("Content-Length", "0") or "0")
+                    received = 0
+                    chunk_size = 1 << 20
+                    last_percent = -1
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        received += len(chunk)
+                        if total > 0:
+                            percent = int((received * 100) / total)
+                            if percent != last_percent and (percent % 5 == 0 or percent == 100):
+                                print(f"MediaPipe model download: {percent}% ({received}/{total} bytes)", file=sys.stderr)
+                                last_percent = percent
+
+            base_options = mp.tasks.BaseOptions(model_asset_path=model_path)
+            options = mp.tasks.vision.PoseLandmarkerOptions(
+                base_options=base_options,
+                running_mode=mp.tasks.vision.RunningMode.IMAGE,
+                num_poses=4,
+                min_pose_detection_confidence=0.5,
+                min_pose_presence_confidence=0.4,
+                min_tracking_confidence=0.4,
+            )
+            model = mp.tasks.vision.PoseLandmarker.create_from_options(options)
+
+            is_cached_after = os.path.exists(model_path)
+            file_size_bytes = int(os.path.getsize(model_path)) if is_cached_after else None
+
+            self._model_info = {
+                "status": "ready-cached" if was_cached_before else "downloaded-and-ready",
+                "engine": "mediapipe-pose",
+                "device": "cpu",
+                "weights_url": self.MODEL_URL,
+                "weights_cache_path": model_path,
+                "download_performed": bool((not was_cached_before) and is_cached_after),
+                "download_percent": 100 if is_cached_after else None,
+                "weights_file_size_bytes": file_size_bytes,
+            }
+            self._mp = mp
         except Exception as exc:
             raise RuntimeError(
-                "Unable to load torchvision Keypoint R-CNN weights. "
-                "Ensure 'torch' and 'torchvision' are installed and the pretrained model weights can be downloaded at least once. "
+                "Unable to load MediaPipe Pose model. "
+                "Ensure 'mediapipe' is installed correctly for this Python environment. "
                 f"Original error: {exc}"
             ) from exc
 
-        model.to(device)
-        model.eval()
-
-        self._torch = torch
         self._model = model
-        self._device = device
-        return self._model, self._torch, self._device
+        return self._model, self._mp, self._model_info
 
     @staticmethod
     def _resize_image(image_bgr, max_side: int):
@@ -70,13 +108,6 @@ class HumanPoseGroundService:
         return image_bgr, scale
 
     @staticmethod
-    def _to_tensor(torch, image_bgr):
-        """Convert OpenCV BGR image to float tensor in RGB CHW format."""
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        tensor = torch.from_numpy(rgb).permute(2, 0, 1).float() / 255.0
-        return tensor
-
-    @staticmethod
     def _valid_point(pt_xy, width, height):
         """Check point is finite and inside image bounds."""
         if pt_xy is None or len(pt_xy) != 2:
@@ -87,23 +118,15 @@ class HumanPoseGroundService:
         return 0 <= x < width and 0 <= y < height
 
     @staticmethod
-    def _keypoint_score(value):
-        """Normalize torchvision keypoint confidence / visibility value."""
-        if value is None:
+    def _keypoint_score(visibility, threshold):
+        """Convert MediaPipe visibility score to normalized confidence."""
+        if visibility is None:
             return None
         try:
-            return float(value)
+            score = float(visibility)
         except Exception:
             return None
-
-    @staticmethod
-    def _is_keypoint_usable(score, threshold):
-        """Support either probability-like scores [0,1] or visibility-like values {0,1,2}."""
-        if score is None:
-            return False
-        if score <= 1.0:
-            return score >= threshold
-        return score >= 1.0
+        return score if score >= threshold else None
 
     @staticmethod
     def _bottom_center(box):
@@ -134,107 +157,136 @@ class HumanPoseGroundService:
         orig_h, orig_w = frame.shape[:2]
         resized, scale = self._resize_image(frame, max_side=max_side)
 
-        model, torch, device = self._ensure_model()
-        image_tensor = self._to_tensor(torch, resized).to(device)
+        model, mp, model_info = self._ensure_model()
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        result = model.detect(mp_image)
 
-        with torch.inference_mode():
-            outputs = model([image_tensor])
-
-        if not outputs:
+        if not result or not result.pose_landmarks:
             return {
                 "mode": "human_pose_ground",
-                "device": str(device),
+                "device": "cpu",
+                "model": model_info,
                 "image_width": int(orig_w),
                 "image_height": int(orig_h),
+                "detection_count": 0,
+                "detections": [],
                 "suggestion_count": 0,
                 "suggestions": [],
             }
 
-        pred = outputs[0]
-        boxes = pred.get("boxes")
-        scores = pred.get("scores")
-        labels = pred.get("labels")
-        keypoints = pred.get("keypoints")
-        keypoint_scores = pred.get("keypoints_scores")
+        poses = result.pose_landmarks or []
+        if not poses:
+            return {
+                "mode": "human_pose_ground",
+                "device": "cpu",
+                "model": model_info,
+                "image_width": int(orig_w),
+                "image_height": int(orig_h),
+                "detection_count": 0,
+                "detections": [],
+                "suggestion_count": 0,
+                "suggestions": [],
+            }
 
-        if boxes is None or scores is None or labels is None:
-            raise RuntimeError("Pose detector output is missing boxes/scores/labels")
+        def lm_xy(lm):
+            return [float(lm.x * resized.shape[1]), float(lm.y * resized.shape[0])]
 
-        boxes = boxes.detach().cpu().numpy()
-        scores = scores.detach().cpu().numpy()
-        labels = labels.detach().cpu().numpy()
-        keypoints = keypoints.detach().cpu().numpy() if keypoints is not None else None
-        keypoint_scores = keypoint_scores.detach().cpu().numpy() if keypoint_scores is not None else None
-
+        detections = []
         suggestions = []
-        for idx in range(len(boxes)):
-            person_score = float(scores[idx])
-            label = int(labels[idx]) if labels is not None else 1
-            if label != 1 or person_score < float(min_person_score):
+        for pose_index, landmarks in enumerate(poses):
+            if not landmarks:
                 continue
 
-            box = boxes[idx]
-            point_source = "bbox-bottom-center"
-            left_ankle_xy = None
-            right_ankle_xy = None
-            left_ankle_score = None
-            right_ankle_score = None
+            visible = [lm for lm in landmarks if 0.0 <= lm.x <= 1.0 and 0.0 <= lm.y <= 1.0]
+            if visible:
+                xs = [lm.x * resized.shape[1] for lm in visible]
+                ys = [lm.y * resized.shape[0] for lm in visible]
+                box = [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))]
+            else:
+                box = [0.0, 0.0, float(resized.shape[1] - 1), float(resized.shape[0] - 1)]
 
-            if keypoints is not None and idx < len(keypoints):
-                kps = keypoints[idx]
-                kps_scores = keypoint_scores[idx] if keypoint_scores is not None and idx < len(keypoint_scores) else None
+            left_ankle_lm = landmarks[self.LEFT_ANKLE] if len(landmarks) > self.LEFT_ANKLE else None
+            right_ankle_lm = landmarks[self.RIGHT_ANKLE] if len(landmarks) > self.RIGHT_ANKLE else None
 
-                left_ankle = kps[self.LEFT_ANKLE] if len(kps) > self.LEFT_ANKLE else None
-                right_ankle = kps[self.RIGHT_ANKLE] if len(kps) > self.RIGHT_ANKLE else None
-
-                if left_ankle is not None:
-                    left_ankle_xy = [float(left_ankle[0]), float(left_ankle[1])]
-                    left_ankle_score = self._keypoint_score(kps_scores[self.LEFT_ANKLE] if kps_scores is not None else left_ankle[2])
-                if right_ankle is not None:
-                    right_ankle_xy = [float(right_ankle[0]), float(right_ankle[1])]
-                    right_ankle_score = self._keypoint_score(kps_scores[self.RIGHT_ANKLE] if kps_scores is not None else right_ankle[2])
+            left_ankle_xy = lm_xy(left_ankle_lm) if left_ankle_lm is not None else None
+            right_ankle_xy = lm_xy(right_ankle_lm) if right_ankle_lm is not None else None
+            left_ankle_score = self._keypoint_score(getattr(left_ankle_lm, "visibility", None), min_keypoint_score)
+            right_ankle_score = self._keypoint_score(getattr(right_ankle_lm, "visibility", None), min_keypoint_score)
 
             usable = []
-            if self._valid_point(left_ankle_xy, resized.shape[1], resized.shape[0]) and self._is_keypoint_usable(left_ankle_score, min_keypoint_score):
+            if self._valid_point(left_ankle_xy, resized.shape[1], resized.shape[0]) and left_ankle_score is not None:
                 usable.append((left_ankle_xy, left_ankle_score))
-            if self._valid_point(right_ankle_xy, resized.shape[1], resized.shape[0]) and self._is_keypoint_usable(right_ankle_score, min_keypoint_score):
+            if self._valid_point(right_ankle_xy, resized.shape[1], resized.shape[0]) and right_ankle_score is not None:
                 usable.append((right_ankle_xy, right_ankle_score))
 
             if usable:
                 xs = [pt[0][0] for pt in usable]
                 ys = [pt[0][1] for pt in usable]
                 point_xy = [float(np.mean(xs)), float(np.max(ys))]
-                point_score = float(np.mean([pt[1] for pt in usable if pt[1] is not None] or [person_score]))
+                point_score = float(np.mean([pt[1] for pt in usable]))
                 point_source = "ankles"
             else:
                 point_xy = self._bottom_center(box)
-                point_score = person_score * 0.5
+                point_score = float(visible[0].visibility) if visible and hasattr(visible[0], "visibility") else 0.0
+                point_source = "bbox-bottom-center"
 
-            if not self._valid_point(point_xy, resized.shape[1], resized.shape[0]):
-                continue
+            is_valid_ground_point = self._valid_point(point_xy, resized.shape[1], resized.shape[0])
+            person_score = float(max(
+                [
+                    float(getattr(left_ankle_lm, "visibility", 0.0)) if left_ankle_lm is not None else 0.0,
+                    float(getattr(right_ankle_lm, "visibility", 0.0)) if right_ankle_lm is not None else 0.0,
+                    point_score,
+                ]
+            ))
 
-            full_xy = [float(point_xy[0] / scale), float(point_xy[1] / scale)]
             full_box = [float(v / scale) for v in box]
-            suggestions.append(
+            full_left_ankle = [float(left_ankle_xy[0] / scale), float(left_ankle_xy[1] / scale)] if left_ankle_xy is not None else None
+            full_right_ankle = [float(right_ankle_xy[0] / scale), float(right_ankle_xy[1] / scale)] if right_ankle_xy is not None else None
+            full_ground_point = [float(point_xy[0] / scale), float(point_xy[1] / scale)] if is_valid_ground_point else None
+
+            detections.append(
                 {
-                    "id": f"auto-ground-{len(suggestions) + 1}",
-                    "pixel": full_xy,
-                    "score": float(point_score),
+                    "id": f"person-{pose_index + 1}",
+                    "label": "person",
                     "person_score": person_score,
+                    "passes_person_threshold": person_score >= float(min_person_score),
                     "source": point_source,
                     "box": full_box,
-                    "left_ankle": [float(left_ankle_xy[0] / scale), float(left_ankle_xy[1] / scale)] if left_ankle_xy is not None else None,
-                    "right_ankle": [float(right_ankle_xy[0] / scale), float(right_ankle_xy[1] / scale)] if right_ankle_xy is not None else None,
+                    "ground_point": full_ground_point,
+                    "ground_point_score": float(point_score) if is_valid_ground_point else None,
+                    "left_ankle": full_left_ankle,
+                    "right_ankle": full_right_ankle,
+                    "left_ankle_score": float(left_ankle_score) if left_ankle_score is not None else None,
+                    "right_ankle_score": float(right_ankle_score) if right_ankle_score is not None else None,
                 }
             )
 
+            if person_score >= float(min_person_score) and is_valid_ground_point:
+                suggestions.append(
+                    {
+                        "id": f"auto-ground-{len(suggestions) + 1}",
+                        "pixel": full_ground_point,
+                        "score": float(point_score),
+                        "person_score": person_score,
+                        "source": point_source,
+                        "box": full_box,
+                        "left_ankle": full_left_ankle,
+                        "right_ankle": full_right_ankle,
+                    }
+                )
+
+        detections.sort(key=lambda item: -float(item["person_score"]))
         suggestions.sort(key=lambda item: (-float(item["pixel"][1]), -float(item["score"])))
 
         return {
             "mode": "human_pose_ground",
-            "device": str(device),
+            "device": "cpu",
+            "model": model_info,
             "image_width": int(orig_w),
             "image_height": int(orig_h),
+            "detection_count": len(detections),
+            "detections": detections,
             "suggestion_count": len(suggestions),
             "suggestions": suggestions,
         }

@@ -115,6 +115,10 @@ export function CalibrationConsole({
   const [validationStatus, setValidationStatus] = useState("No live validation run yet.");
   const [validationResult, setValidationResult] = useState(null);
   const [autoGroundSuggestions, setAutoGroundSuggestions] = useState([]);
+  const [autoGroundDetections, setAutoGroundDetections] = useState([]);
+  const [autoGroundModelInfo, setAutoGroundModelInfo] = useState(null);
+  const [autoGroundLogs, setAutoGroundLogs] = useState([]);
+  const [autoGroundImageSize, setAutoGroundImageSize] = useState({ width: 1, height: 1 });
   const [autoGroundStatus, setAutoGroundStatus] = useState("No automatic human ground detection run yet.");
   const [autoGroundLoading, setAutoGroundLoading] = useState(false);
   const [pendingAutoGroundIndex, setPendingAutoGroundIndex] = useState(null);
@@ -130,6 +134,18 @@ export function CalibrationConsole({
   const [pendingWorldPoint, setPendingWorldPoint] = useState(null);
   const [pendingImagePoint, setPendingImagePoint] = useState(null);
   const [correspondences, setCorrespondences] = useState([]);
+  const [groundMappingModes, setGroundMappingModes] = useState({
+    imageCad: true,
+    imageCoords: false,
+    imageDistances: false,
+    polygonCad: false,
+  });
+  const [manualWorldInput, setManualWorldInput] = useState({ x: "", y: "", z: "0" });
+  const [distanceConstraints, setDistanceConstraints] = useState([]);
+  const [distanceDraft, setDistanceDraft] = useState({ from: "", to: "", distance: "" });
+  const [polygonCaptureActive, setPolygonCaptureActive] = useState(false);
+  const [polygonImagePoints, setPolygonImagePoints] = useState([]);
+  const [polygonCadPoints, setPolygonCadPoints] = useState([]);
   const [imagePickMode, setImagePickMode] = useState("ground");
   const [zMappings, setZMappings] = useState([]);
   const [selectedGroundPairIndex, setSelectedGroundPairIndex] = useState(0);
@@ -292,6 +308,57 @@ export function CalibrationConsole({
     return normalized;
   }
 
+  function normalizeAutoGroundDetections(items) {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    const normalizePoint = (value) => {
+      if (!Array.isArray(value) || value.length !== 2) {
+        return null;
+      }
+      const point = [Number(value[0]), Number(value[1])];
+      return point.every((entry) => Number.isFinite(entry)) ? point : null;
+    };
+
+    const normalizeBox = (value) => {
+      if (!Array.isArray(value) || value.length !== 4) {
+        return null;
+      }
+      const box = value.map((entry) => Number(entry));
+      return box.every((entry) => Number.isFinite(entry)) ? box : null;
+    };
+
+    const normalized = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      const score = Number(item?.person_score ?? item?.personScore);
+      const groundPoint = normalizePoint(item?.ground_point ?? item?.groundPoint);
+      const leftAnkle = normalizePoint(item?.left_ankle ?? item?.leftAnkle);
+      const rightAnkle = normalizePoint(item?.right_ankle ?? item?.rightAnkle);
+      normalized.push({
+        id: String(item?.id || `person-${i + 1}`),
+        label: String(item?.label || "person"),
+        person_score: Number.isFinite(score) ? score : null,
+        passes_person_threshold: Boolean(item?.passes_person_threshold ?? item?.passesPersonThreshold),
+        source: String(item?.source || "bbox-bottom-center"),
+        box: normalizeBox(item?.box),
+        ground_point: groundPoint,
+        left_ankle: leftAnkle,
+        right_ankle: rightAnkle,
+      });
+    }
+
+    return normalized;
+  }
+
+  function normalizeAutoGroundLogs(items) {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+    return items.map((item) => String(item || "")).filter(Boolean).slice(-40);
+  }
+
   function buildDefaultCompletedStages() {
     return {
       intrinsic: false,
@@ -357,7 +424,26 @@ export function CalibrationConsole({
       zMappings: Array.isArray(workspace.zMappings) ? workspace.zMappings : [],
       validationPairs: Array.isArray(workspace.validationPairs) ? workspace.validationPairs : [],
       autoGroundSuggestions: normalizeAutoGroundSuggestions(workspace.autoGroundSuggestions),
+      autoGroundDetections: normalizeAutoGroundDetections(workspace.autoGroundDetections),
+      autoGroundModelInfo: workspace.autoGroundModelInfo && typeof workspace.autoGroundModelInfo === "object" ? workspace.autoGroundModelInfo : null,
+      autoGroundLogs: normalizeAutoGroundLogs(workspace.autoGroundLogs),
+      autoGroundImageSize: workspace.autoGroundImageSize && typeof workspace.autoGroundImageSize === "object"
+        ? {
+            width: Number(workspace.autoGroundImageSize.width || 1),
+            height: Number(workspace.autoGroundImageSize.height || 1),
+          }
+        : { width: 1, height: 1 },
       autoGroundStatus: String(workspace.autoGroundStatus || "No automatic human ground detection run yet."),
+      groundMappingModes:
+        workspace.groundMappingModes && typeof workspace.groundMappingModes === "object"
+          ? {
+              imageCad: workspace.groundMappingModes.imageCad !== false,
+              imageCoords: Boolean(workspace.groundMappingModes.imageCoords),
+              imageDistances: Boolean(workspace.groundMappingModes.imageDistances),
+              polygonCad: Boolean(workspace.groundMappingModes.polygonCad),
+            }
+          : { imageCad: true, imageCoords: false, imageDistances: false, polygonCad: false },
+      distanceConstraints: Array.isArray(workspace.distanceConstraints) ? workspace.distanceConstraints : [],
       snapshotDataUrl: workspace.snapshotDataUrl || "",
       snapshotPath: workspace.snapshotPath || "",
       segments: Array.isArray(workspace.segments) ? workspace.segments : [],
@@ -537,7 +623,13 @@ export function CalibrationConsole({
       zMappings: deepClone(Array.isArray(zMappings) ? zMappings : []),
       validationPairs: deepClone(Array.isArray(validationPairs) ? validationPairs : []),
       autoGroundSuggestions: deepClone(normalizeAutoGroundSuggestions(autoGroundSuggestions)),
+      autoGroundDetections: deepClone(normalizeAutoGroundDetections(autoGroundDetections)),
+      autoGroundModelInfo: autoGroundModelInfo && typeof autoGroundModelInfo === "object" ? deepClone(autoGroundModelInfo) : null,
+      autoGroundLogs: deepClone(normalizeAutoGroundLogs(autoGroundLogs)),
+      autoGroundImageSize: deepClone(autoGroundImageSize),
       autoGroundStatus: autoGroundStatus || "No automatic human ground detection run yet.",
+      groundMappingModes: deepClone(groundMappingModes),
+      distanceConstraints: deepClone(Array.isArray(distanceConstraints) ? distanceConstraints : []),
       intrinsicsPath: intrinsicsPath || "",
       latestCalibrationYamlPath: latestCalibrationYamlPath || "",
       stageOutputs: deepClone(stageOutputs),
@@ -553,6 +645,17 @@ export function CalibrationConsole({
     const loadedZmappings = Array.isArray(workspace.zMappings) ? workspace.zMappings : [];
     const loadedValidation = Array.isArray(workspace.validationPairs) ? workspace.validationPairs : [];
     const loadedAutoGroundSuggestions = normalizeAutoGroundSuggestions(workspace.autoGroundSuggestions);
+    const loadedAutoGroundDetections = normalizeAutoGroundDetections(workspace.autoGroundDetections);
+    const loadedDistanceConstraints = Array.isArray(workspace.distanceConstraints) ? workspace.distanceConstraints : [];
+    const loadedMappingModes =
+      workspace.groundMappingModes && typeof workspace.groundMappingModes === "object"
+        ? {
+            imageCad: workspace.groundMappingModes.imageCad !== false,
+            imageCoords: Boolean(workspace.groundMappingModes.imageCoords),
+            imageDistances: Boolean(workspace.groundMappingModes.imageDistances),
+            polygonCad: Boolean(workspace.groundMappingModes.polygonCad),
+          }
+        : { imageCad: true, imageCoords: false, imageDistances: false, polygonCad: false };
 
     setCameraType(workspace.cameraType || camera?.cameraType || "cctv");
     setSourceMode(workspace.sourceMode || camera?.sourceMode || "rtsp");
@@ -584,6 +687,19 @@ export function CalibrationConsole({
     setZMappings(loadedZmappings);
     setValidationPairs(loadedValidation);
     setAutoGroundSuggestions(loadedAutoGroundSuggestions);
+    setAutoGroundDetections(loadedAutoGroundDetections);
+    setAutoGroundModelInfo(workspace.autoGroundModelInfo && typeof workspace.autoGroundModelInfo === "object" ? workspace.autoGroundModelInfo : null);
+    setAutoGroundLogs(normalizeAutoGroundLogs(workspace.autoGroundLogs));
+    setAutoGroundImageSize(
+      workspace.autoGroundImageSize && typeof workspace.autoGroundImageSize === "object"
+        ? {
+            width: Number(workspace.autoGroundImageSize.width || 1),
+            height: Number(workspace.autoGroundImageSize.height || 1),
+          }
+        : { width: 1, height: 1 }
+    );
+    setGroundMappingModes(loadedMappingModes);
+    setDistanceConstraints(loadedDistanceConstraints);
     setAutoGroundStatus(
       workspace.autoGroundStatus ||
         (loadedAutoGroundSuggestions.length
@@ -2039,6 +2155,10 @@ export function CalibrationConsole({
         setSnapshotPath(saveData.outputPath || "");
         setSnapshotStatus(`Webcam snapshot captured: ${saveData.outputPath}`);
         setAutoGroundSuggestions([]);
+        setAutoGroundDetections([]);
+        setAutoGroundModelInfo(null);
+        setAutoGroundLogs([]);
+        setAutoGroundImageSize({ width: 1, height: 1 });
         setPendingAutoGroundIndex(null);
         setAutoGroundStatus("Snapshot updated. Run automatic human ground detection.");
         return;
@@ -2057,6 +2177,10 @@ export function CalibrationConsole({
       setSnapshotPath(data.outputPath || "");
       setSnapshotStatus(`Snapshot captured from ${sourceUrl}`);
       setAutoGroundSuggestions([]);
+      setAutoGroundDetections([]);
+      setAutoGroundModelInfo(null);
+      setAutoGroundLogs([]);
+      setAutoGroundImageSize({ width: 1, height: 1 });
       setPendingAutoGroundIndex(null);
       setAutoGroundStatus("Snapshot updated. Run automatic human ground detection.");
     } catch (err) {
@@ -2071,6 +2195,7 @@ export function CalibrationConsole({
       }
 
       setAutoGroundLoading(true);
+      setAutoGroundLogs([]);
       setAutoGroundStatus("Detecting human ground-contact points on CPU... first run may download model weights.");
 
       const res = await fetch("/api/calibration/web/ground/pose-detect", {
@@ -2090,15 +2215,31 @@ export function CalibrationConsole({
 
       const result = data?.result || {};
       const suggestions = normalizeAutoGroundSuggestions(result?.suggestions);
+      const detections = normalizeAutoGroundDetections(result?.detections);
+      const modelInfo = data?.model && typeof data.model === "object" ? data.model : (result?.model && typeof result.model === "object" ? result.model : null);
+      const logs = normalizeAutoGroundLogs(data?.logs);
       const count = suggestions.length;
+      const detectionCount = Number(result?.detection_count ?? detections.length);
       const device = String(result?.device || "cpu");
 
       setAutoGroundSuggestions(suggestions);
+      setAutoGroundDetections(detections);
+      setAutoGroundModelInfo(modelInfo);
+      setAutoGroundLogs(logs);
+      setAutoGroundImageSize({
+        width: Number(result?.image_width || snapshotNaturalSize.width || 1),
+        height: Number(result?.image_height || snapshotNaturalSize.height || 1),
+      });
       setPendingAutoGroundIndex(null);
+
+      const modelSuffix = modelInfo
+        ? ` Model: ${modelInfo.status || "ready"}${modelInfo.weights_url ? ` · source ${modelInfo.weights_url}` : ""}${modelInfo.download_percent != null ? ` · ${modelInfo.download_percent}%` : ""}.`
+        : "";
+
       setAutoGroundStatus(
         count
-          ? `Detected ${count} automatic human ground suggestion${count === 1 ? "" : "s"} using ${device} inference. Select one and then pick the matching CAD point.`
-          : "No human ground suggestions found. Try a clearer snapshot with visible feet or full body pose."
+          ? `Detected ${detectionCount} human${detectionCount === 1 ? "" : "s"}; ${count} automatic ground suggestion${count === 1 ? "" : "s"} using ${device} inference.${modelSuffix} Select one and then pick the matching CAD point.`
+          : `Detected ${detectionCount} human${detectionCount === 1 ? "" : "s"}, but no valid ground suggestion points.${modelSuffix} Try a clearer snapshot with visible feet or full body pose.`
       );
     } catch (err) {
       setAutoGroundStatus(err instanceof Error ? err.message : "Automatic human ground detection failed");
@@ -2109,6 +2250,10 @@ export function CalibrationConsole({
 
   function clearAutoGroundSuggestions() {
     setAutoGroundSuggestions([]);
+    setAutoGroundDetections([]);
+    setAutoGroundModelInfo(null);
+    setAutoGroundLogs([]);
+    setAutoGroundImageSize({ width: 1, height: 1 });
     setPendingAutoGroundIndex(null);
     setPendingImagePoint(null);
     setAutoGroundStatus("Automatic human ground suggestions cleared.");
@@ -2411,6 +2556,28 @@ export function CalibrationConsole({
       return;
     }
 
+    if (polygonCaptureActive && imagePickMode === "polygon-image") {
+      const normalizedWorld = [Number(world.x ?? world[0]), Number(world.y ?? world[1]), Number(world.z ?? world[2])];
+      if (!normalizedWorld.every((value) => Number.isFinite(value))) {
+        setSolveStatus("Invalid CAD point for polygon mapping.");
+        return;
+      }
+      if (polygonCadPoints.length >= polygonImagePoints.length) {
+        setSolveStatus("Add an image polygon vertex first, then pick CAD vertex.");
+        return;
+      }
+      setPolygonCadPoints((prev) => [...prev, normalizedWorld]);
+      setSolveStatus(
+        `Polygon vertex pair ${polygonCadPoints.length + 1} captured. ${polygonImagePoints.length > polygonCadPoints.length + 1 ? "Continue with next CAD vertex." : "Add more image vertices or finalize polygon mapping."}`
+      );
+      return;
+    }
+
+    if (!groundMappingModes.imageCad) {
+      setSolveStatus("Image↔CAD pairing is disabled in selected mapping methods. Enable it or use manual coordinate mode.");
+      return;
+    }
+
     if (!pendingImagePoint) {
       setSolveStatus("First click on snapshot image to choose pixel point, then pick CAD point.");
       return;
@@ -2448,6 +2615,12 @@ export function CalibrationConsole({
 
     const xPix = xView * scaleX;
     const yPix = yView * scaleY;
+
+    if (polygonCaptureActive && imagePickMode === "polygon-image") {
+      setPolygonImagePoints((prev) => [...prev, [xPix, yPix]]);
+      setSolveStatus(`Polygon image vertex ${polygonImagePoints.length + 1} added. Now pick matching CAD vertex.`);
+      return;
+    }
 
     if (imagePickMode === "shared-marker" && pendingSharedMarkerIndex !== null) {
       if (!activeProjectCameraId) {
@@ -2565,7 +2738,13 @@ export function CalibrationConsole({
 
     setPendingAutoGroundIndex(null);
     setPendingImagePoint([xPix, yPix]);
-    setSolveStatus(`Image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
+    if (groundMappingModes.imageCoords) {
+      setSolveStatus(
+        `Image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Enter world coordinates and add pair${groundMappingModes.imageCad ? " or pick CAD point" : ""}.`
+      );
+    } else {
+      setSolveStatus(`Image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
+    }
   }
 
   function onSnapshotImageLoad(e) {
@@ -2598,11 +2777,155 @@ export function CalibrationConsole({
 
   function setGroundPickMode() {
     setImagePickMode("ground");
+    setPolygonCaptureActive(false);
+    setPolygonImagePoints([]);
+    setPolygonCadPoints([]);
     setPendingZGroundIndex(null);
     setPendingZImageTip(null);
     setPendingSharedMarkerIndex(null);
     setPendingAutoGroundIndex(null);
     setSolveStatus("Ground pick mode active.");
+  }
+
+  function setGroundMappingMode(modeKey, enabled) {
+    if (!enabled) {
+      setGroundMappingModes({ imageCad: true, imageCoords: false, imageDistances: false, polygonCad: false });
+      setSolveStatus("Ground mapping mode set to Image + AutoCAD points.");
+      return;
+    }
+
+    const next = {
+      imageCad: modeKey === "imageCad",
+      imageCoords: modeKey === "imageCoords",
+      imageDistances: modeKey === "imageDistances",
+      polygonCad: modeKey === "polygonCad",
+    };
+    setGroundMappingModes(next);
+
+    if (modeKey !== "polygonCad") {
+      setPolygonCaptureActive(false);
+      setPolygonImagePoints([]);
+      setPolygonCadPoints([]);
+      if (imagePickMode === "polygon-image") {
+        setImagePickMode("ground");
+      }
+    }
+
+    const label =
+      modeKey === "imageCad"
+        ? "Image + AutoCAD"
+        : modeKey === "imageCoords"
+          ? "Image + Manual Coordinates"
+          : modeKey === "imageDistances"
+            ? "Image + Distances"
+            : "Polygon Image + AutoCAD";
+    setSolveStatus(`Ground mapping mode: ${label}.`);
+  }
+
+  function addManualCoordinatePair() {
+    if (!pendingImagePoint) {
+      setSolveStatus("Pick an image point first, then enter world coordinates.");
+      return;
+    }
+
+    const world = [Number(manualWorldInput.x), Number(manualWorldInput.y), Number(manualWorldInput.z)];
+    if (!world.every((value) => Number.isFinite(value))) {
+      setSolveStatus("Enter valid numeric world coordinates (X, Y, Z).");
+      return;
+    }
+
+    setCorrespondences((prev) => {
+      const markerId = `m${prev.length + 1}`;
+      const pair = {
+        markerId,
+        world,
+        pixel: pendingImagePoint,
+      };
+      const next = [...prev, pair];
+      setCorrespondenceText(JSON.stringify(next, null, 2));
+      return next;
+    });
+
+    setPendingImagePoint(null);
+    setPendingWorldPoint(null);
+    setPendingAutoGroundIndex(null);
+    setSolveStatus("Manual world-coordinate pair added.");
+  }
+
+  function addDistanceConstraint() {
+    const from = String(distanceDraft.from || "").trim();
+    const to = String(distanceDraft.to || "").trim();
+    const distance = Number(distanceDraft.distance);
+    if (!from || !to || from === to) {
+      setSolveStatus("Choose two different markers for distance constraint.");
+      return;
+    }
+    if (!Number.isFinite(distance) || distance <= 0) {
+      setSolveStatus("Enter a valid positive distance.");
+      return;
+    }
+
+    setDistanceConstraints((prev) => [
+      ...prev,
+      {
+        id: `dist-${Date.now()}-${prev.length + 1}`,
+        from,
+        to,
+        distance,
+      },
+    ]);
+    setDistanceDraft({ from: "", to: "", distance: "" });
+    setSolveStatus("Distance constraint saved. You can combine this with other mapping methods.");
+  }
+
+  function deleteDistanceConstraint(index) {
+    setDistanceConstraints((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function beginPolygonCadMapping() {
+    setPolygonCaptureActive(true);
+    setPolygonImagePoints([]);
+    setPolygonCadPoints([]);
+    setImagePickMode("polygon-image");
+    setPendingImagePoint(null);
+    setPendingWorldPoint(null);
+    setSolveStatus("Polygon mapping started: click image vertices in order, then click matching CAD points in order.");
+  }
+
+  function clearPolygonCadMapping() {
+    setPolygonCaptureActive(false);
+    setPolygonImagePoints([]);
+    setPolygonCadPoints([]);
+    setImagePickMode("ground");
+    setSolveStatus("Polygon mapping cleared.");
+  }
+
+  function finalizePolygonCadMapping() {
+    const usable = Math.min(polygonImagePoints.length, polygonCadPoints.length);
+    if (usable < 2) {
+      setSolveStatus("Polygon mapping needs at least 2 matched vertices.");
+      return;
+    }
+
+    setCorrespondences((prev) => {
+      const additions = [];
+      for (let i = 0; i < usable; i += 1) {
+        additions.push({
+          markerId: `m${prev.length + additions.length + 1}`,
+          world: polygonCadPoints[i],
+          pixel: polygonImagePoints[i],
+        });
+      }
+      const next = [...prev, ...additions];
+      setCorrespondenceText(JSON.stringify(next, null, 2));
+      return next;
+    });
+
+    setSolveStatus(`Polygon mapping added ${usable} correspondence pair${usable === 1 ? "" : "s"}.`);
+    setPolygonCaptureActive(false);
+    setPolygonImagePoints([]);
+    setPolygonCadPoints([]);
+    setImagePickMode("ground");
   }
 
   function getGroundValidationReadiness() {
@@ -3349,10 +3672,21 @@ export function CalibrationConsole({
             correspondences,
             validationPairs,
             autoGroundSuggestions,
+            autoGroundDetections,
+            autoGroundModelInfo,
+            autoGroundLogs,
+            autoGroundImageSize,
             autoGroundStatus,
             autoGroundLoading,
             pendingAutoGroundIndex,
             pendingImagePoint,
+            groundMappingModes,
+            manualWorldInput,
+            distanceConstraints,
+            distanceDraft,
+            polygonCaptureActive,
+            polygonImagePoints,
+            polygonCadPoints,
             solveStatus,
             jobLoading,
             sequenceRunning,
@@ -3372,6 +3706,15 @@ export function CalibrationConsole({
             clearFeedError,
             captureSnapshotWeb,
             detectAutoGroundPoints,
+            setGroundMappingMode,
+            setManualWorldInput,
+            addManualCoordinatePair,
+            setDistanceDraft,
+            addDistanceConstraint,
+            deleteDistanceConstraint,
+            beginPolygonCadMapping,
+            finalizePolygonCadMapping,
+            clearPolygonCadMapping,
             onSnapshotImageLoad,
             onSnapshotPick,
             onImagePointMouseDown,

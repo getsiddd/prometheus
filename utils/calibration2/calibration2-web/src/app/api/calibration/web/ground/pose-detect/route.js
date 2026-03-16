@@ -8,6 +8,18 @@ import { parseLastJson, runPython } from "@/lib/server/pythonRunner";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function extractProgressLines(stderrText) {
+  const lines = String(stderrText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const relevant = lines.filter((line) =>
+    /download|downloading|http|https|%|keypoint|checkpoint|weights/i.test(line)
+  );
+  return relevant.slice(-40);
+}
+
 function parseDataUrl(dataUrl) {
   if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) {
     throw new Error("Invalid image data URL");
@@ -57,9 +69,13 @@ export async function POST(req) {
     ]);
 
     const parsed = parseLastJson(result.out);
+    const progressLines = extractProgressLines(result.err);
+    const detectorResult = parsed?.result || {};
     return NextResponse.json({
       ok: true,
-      result: parsed?.result || {},
+      result: detectorResult,
+      model: detectorResult?.model || null,
+      logs: progressLines,
     });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "pose ground detection failed" }, { status: 500 });

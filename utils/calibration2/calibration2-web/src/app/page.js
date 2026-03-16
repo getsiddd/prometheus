@@ -283,6 +283,7 @@ export function CalibrationConsole({
   const projectSharedDwgInputRef = useRef(null);
   const snapshotImgRef = useRef(null);
   const snapshotOverlayRef = useRef(null);
+  const liveFeedImgRef = useRef(null);
   const webcamVideoRef = useRef(null);
   const intrinsicVideoRef = useRef(null);
   const groundVideoRef = useRef(null);
@@ -1386,9 +1387,6 @@ export function CalibrationConsole({
       if (!dwgPathValue) {
         return { enabled: false, status: "DWG path missing." };
       }
-      if (!snapshot) {
-        return { enabled: false, status: "Snapshot missing." };
-      }
       if (corr.length < 4) {
         return { enabled: false, status: `Need at least 4 pairs (have ${corr.length}).` };
       }
@@ -2065,9 +2063,6 @@ export function CalibrationConsole({
       if (!dwgPath) {
         return { enabled: false, status: "Upload CAD/DWG first." };
       }
-      if (!snapshotDataUrl) {
-        return { enabled: false, status: "Capture snapshot first." };
-      }
       if (correspondences.length < 4) {
         return { enabled: false, status: `Add at least 4 image↔CAD point pairs (current: ${correspondences.length}).` };
       }
@@ -2079,7 +2074,7 @@ export function CalibrationConsole({
         return { enabled: false, status: "Complete Ground Plane stage first." };
       }
       if (!snapshotDataUrl) {
-        return { enabled: false, status: "Capture snapshot first for Z preview." };
+        return { enabled: false, status: "Capture reference frame first (use the button in Ground Plane step)." };
       }
       if (zMappings.length < 1) {
         return { enabled: false, status: "Add at least 1 Z-direction point from existing ground points." };
@@ -2119,9 +2114,6 @@ export function CalibrationConsole({
     if (stage === "ground-plane") {
       if (!dwgPath) {
         return { enabled: false, status: "Upload CAD/DWG first." };
-      }
-      if (!snapshotDataUrl) {
-        return { enabled: false, status: "Capture snapshot first." };
       }
       if (correspondences.length < 4) {
         return { enabled: false, status: `Add at least 4 image↔CAD point pairs (current: ${correspondences.length}).` };
@@ -2483,17 +2475,18 @@ export function CalibrationConsole({
         if (!saveRes.ok) {
           throw new Error(saveData?.error || "Webcam snapshot save failed");
         }
-        setSnapshotDataUrl(saveData.snapshotDataUrl || imageDataUrl);
+        const capturedWebcamUrl = saveData.snapshotDataUrl || imageDataUrl;
+        setSnapshotDataUrl(capturedWebcamUrl);
         setSnapshotPath(saveData.outputPath || "");
-        setSnapshotStatus(`Webcam snapshot captured: ${saveData.outputPath}`);
+        setSnapshotStatus(`Reference frame captured (webcam): ${saveData.outputPath}`);
         setAutoGroundSuggestions([]);
         setAutoGroundDetections([]);
         setAutoGroundModelInfo(null);
         setAutoGroundLogs([]);
         setAutoGroundImageSize({ width: 1, height: 1 });
         setPendingAutoGroundIndex(null);
-        setAutoGroundStatus("Snapshot updated. Run automatic human ground detection.");
-        return;
+        setAutoGroundStatus("Reference frame ready. Run human ground detection.");
+        return capturedWebcamUrl;
       }
 
       const res = await fetch("/api/calibration/web/snapshot", {
@@ -2505,36 +2498,45 @@ export function CalibrationConsole({
       if (!res.ok) {
         throw new Error(data?.error || "Snapshot capture failed");
       }
-      setSnapshotDataUrl(data.snapshotDataUrl || "");
+      const capturedUrl = data.snapshotDataUrl || "";
+      setSnapshotDataUrl(capturedUrl);
       setSnapshotPath(data.outputPath || "");
-      setSnapshotStatus(`Snapshot captured from ${sourceUrl}`);
+      setSnapshotStatus(`Reference frame captured from ${sourceUrl}`);
       setAutoGroundSuggestions([]);
       setAutoGroundDetections([]);
       setAutoGroundModelInfo(null);
       setAutoGroundLogs([]);
       setAutoGroundImageSize({ width: 1, height: 1 });
       setPendingAutoGroundIndex(null);
-      setAutoGroundStatus("Snapshot updated. Run automatic human ground detection.");
+      setAutoGroundStatus("Reference frame ready. Run human ground detection.");
+      return capturedUrl;
     } catch (err) {
       setSnapshotStatus(err instanceof Error ? err.message : "Snapshot capture failed");
+      return "";
     }
   }
 
   async function detectAutoGroundPoints() {
     try {
-      if (!snapshotDataUrl) {
-        throw new Error("Capture a snapshot first, then run automatic human ground detection.");
-      }
-
       setAutoGroundLoading(true);
       setAutoGroundLogs([]);
+
+      let imageUrl = snapshotDataUrl;
+      if (!imageUrl) {
+        setAutoGroundStatus("Capturing reference frame before detection...");
+        imageUrl = await captureSnapshotWeb();
+        if (!imageUrl) {
+          throw new Error("Could not capture a reference frame. Start the live feed first.");
+        }
+      }
+
       setAutoGroundStatus("Detecting human ground-contact points on CPU... first run may download model weights.");
 
       const res = await fetch("/api/calibration/web/ground/pose-detect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageDataUrl: snapshotDataUrl,
+          imageDataUrl: imageUrl,
           maxSide: 960,
           minPersonScore: 0.65,
           minKeypointScore: 0.35,
@@ -3084,6 +3086,15 @@ export function CalibrationConsole({
       width: e.currentTarget.naturalWidth || 1,
       height: e.currentTarget.naturalHeight || 1,
     });
+  }
+
+  function onLiveFeedLoad(e) {
+    const el = e.currentTarget;
+    const w = el.naturalWidth || el.videoWidth || 0;
+    const h = el.naturalHeight || el.videoHeight || 0;
+    if (w && h) {
+      setSnapshotNaturalSize({ width: w, height: h });
+    }
   }
 
   function beginZPointCapture() {
@@ -4066,6 +4077,7 @@ export function CalibrationConsole({
             finalizePolygonCadMapping,
             clearPolygonCadMapping,
             onSnapshotImageLoad,
+            onLiveFeedLoad,
             onSnapshotPick,
             onImagePointMouseDown,
             undoPair,
@@ -4088,6 +4100,7 @@ export function CalibrationConsole({
             groundVideoRef,
             snapshotImgRef,
             snapshotOverlayRef,
+            liveFeedImgRef,
             dwgInputRef,
           }}
           renderStageStatus={renderStageStatus}

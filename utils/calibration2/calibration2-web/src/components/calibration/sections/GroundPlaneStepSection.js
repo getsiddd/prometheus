@@ -48,6 +48,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     setGroundPickMode,
     setValidationPickMode,
     beginSharedMarkerCapture,
+    autoPlaceMarkersFromSolvedCameras,
     onFeedError,
     clearFeedError,
     captureSnapshotWeb,
@@ -62,6 +63,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     finalizePolygonCadMapping,
     clearPolygonCadMapping,
     onSnapshotImageLoad,
+    onLiveFeedLoad,
     onSnapshotPick,
     onImagePointMouseDown,
     undoPair,
@@ -81,7 +83,126 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     handleCadPick,
   } = actions;
 
-  const { groundVideoRef, snapshotImgRef, snapshotOverlayRef, dwgInputRef } = refs;
+  const { groundVideoRef, snapshotImgRef, snapshotOverlayRef, liveFeedImgRef, dwgInputRef } = refs;
+
+  // Shared interactive picking overlay: placed directly on the live feed
+  const pickingOverlay = (
+    <svg
+      ref={snapshotOverlayRef}
+      onClick={onSnapshotPick}
+      className="absolute inset-0 h-full w-full cursor-crosshair"
+      viewBox={`0 0 ${snapshotNaturalSize.width || 1} ${snapshotNaturalSize.height || 1}`}
+      preserveAspectRatio="none"
+    >
+      {polygonImagePoints.length >= 2 ? (
+        <polyline
+          points={polygonImagePoints.map((p) => `${p[0]},${p[1]}`).join(" ")}
+          fill="none"
+          stroke="#22d3ee"
+          strokeWidth="2"
+          strokeDasharray="6 4"
+        />
+      ) : null}
+      {polygonImagePoints.map((p, idx) => (
+        <g key={`poly-img-${idx}`}>
+          <circle cx={p[0]} cy={p[1]} r="6" fill="#06b6d4" stroke="#164e63" strokeWidth="2" />
+          <text x={p[0] + 8} y={p[1] - 8} fill="#67e8f9" fontSize="12" fontWeight="700">P{idx + 1}</text>
+        </g>
+      ))}
+      {correspondences.length >= 2 ? (
+        <polygon
+          points={correspondences.map((p) => `${p.pixel[0]},${p.pixel[1]}`).join(" ")}
+          fill="rgba(34,197,94,0.15)"
+          stroke="#22c55e"
+          strokeWidth="2"
+        />
+      ) : null}
+      {correspondences.map((p, idx) => (
+        <g key={`img-p-${idx}`}>
+          <circle
+            cx={p.pixel[0]}
+            cy={p.pixel[1]}
+            r="9"
+            fill="#22c55e"
+            stroke="#052e16"
+            strokeWidth="2"
+            onMouseDown={(e) => onImagePointMouseDown(idx, e)}
+            style={{ cursor: "grab" }}
+          />
+          <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#22c55e" fontSize="16" fontWeight="700">{p.markerId || idx + 1}</text>
+        </g>
+      ))}
+      {validationPairs.map((p, idx) => (
+        <g key={`val-p-${idx}`}>
+          <circle cx={p.pixel[0]} cy={p.pixel[1]} r="8" fill="#f59e0b" stroke="#7c2d12" strokeWidth="2" />
+          <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">V{idx + 1}</text>
+        </g>
+      ))}
+      {autoGroundDetections.map((detection, idx) => {
+        const box = Array.isArray(detection.box) && detection.box.length === 4 ? detection.box : null;
+        const groundPoint = Array.isArray(detection.ground_point) && detection.ground_point.length === 2 ? detection.ground_point : null;
+        const leftAnkle = Array.isArray(detection.left_ankle) && detection.left_ankle.length === 2 ? detection.left_ankle : null;
+        const rightAnkle = Array.isArray(detection.right_ankle) && detection.right_ankle.length === 2 ? detection.right_ankle : null;
+        return (
+          <g key={detection.id || `det-${idx}`} opacity={0.85} pointerEvents="none">
+            {box ? (
+              <rect
+                x={box[0]} y={box[1]}
+                width={Math.max(0, box[2] - box[0])} height={Math.max(0, box[3] - box[1])}
+                fill="rgba(250,204,21,0.04)"
+                stroke={detection.passes_person_threshold ? "#eab308" : "#a3a3a3"}
+                strokeWidth="2"
+              />
+            ) : null}
+            {leftAnkle ? <circle cx={leftAnkle[0]} cy={leftAnkle[1]} r="4" fill="#fde047" /> : null}
+            {rightAnkle ? <circle cx={rightAnkle[0]} cy={rightAnkle[1]} r="4" fill="#fde047" /> : null}
+            {groundPoint ? <circle cx={groundPoint[0]} cy={groundPoint[1]} r="5" fill="#facc15" stroke="#713f12" strokeWidth="1.5" /> : null}
+            <text
+              x={(box ? box[0] : (groundPoint ? groundPoint[0] : 12)) + 6}
+              y={(box ? box[1] : (groundPoint ? groundPoint[1] : 18)) - 6}
+              fill="#facc15" fontSize="12" fontWeight="700"
+            >
+              H{idx + 1}
+            </text>
+          </g>
+        );
+      })}
+      {autoGroundSuggestions.map((suggestion, idx) => {
+        const active = pendingAutoGroundIndex === idx;
+        const box = Array.isArray(suggestion.box) && suggestion.box.length === 4 ? suggestion.box : null;
+        return (
+          <g key={suggestion.id || `auto-ground-${idx}`} opacity={active ? 1 : 0.95} pointerEvents="none">
+            {box ? (
+              <rect
+                x={box[0]} y={box[1]}
+                width={Math.max(0, box[2] - box[0])} height={Math.max(0, box[3] - box[1])}
+                fill="rgba(14,165,233,0.05)"
+                stroke={active ? "#0ea5e9" : "#38bdf8"}
+                strokeDasharray="8 6" strokeWidth="2"
+              />
+            ) : null}
+            <circle
+              cx={suggestion.pixel[0]} cy={suggestion.pixel[1]}
+              r={active ? "10" : "8"}
+              fill={active ? "#0ea5e9" : "#38bdf8"}
+              stroke="#082f49" strokeWidth="2"
+            />
+            <text x={suggestion.pixel[0] + 10} y={suggestion.pixel[1] - 10} fill={active ? "#7dd3fc" : "#38bdf8"} fontSize="14" fontWeight="700">
+              A{idx + 1}
+            </text>
+          </g>
+        );
+      })}
+      {pendingImagePoint ? (
+        <g>
+          <circle cx={pendingImagePoint[0]} cy={pendingImagePoint[1]} r="7" fill="#f59e0b" />
+          <text x={pendingImagePoint[0] + 10} y={pendingImagePoint[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">
+            {imagePickMode === "validation" ? "V" : imagePickMode === "shared-marker" ? "S" : "P"}
+          </text>
+        </g>
+      ) : null}
+    </svg>
+  );
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
@@ -156,52 +277,40 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
               Validation Pick Mode
             </button>
             <button onClick={beginSharedMarkerCapture} className="rounded border border-blue-700 bg-blue-900/30 px-2 py-1 text-xs hover:bg-blue-800/40">Shared Marker Mode</button>
+            <button onClick={autoPlaceMarkersFromSolvedCameras} className="rounded border border-violet-700 bg-violet-900/30 px-2 py-1 text-xs hover:bg-violet-800/40">Auto-Place Markers (LoFTR/AI)</button>
           </div>
           <div className={`text-xs ${groundValidationReadiness?.enabled ? "text-emerald-300" : "text-amber-300"}`}>
             Validation unlock: {groundValidationReadiness?.status || "Not ready"}
           </div>
           {sourceMode === "webcam" ? (
             <div className="relative">
-              <video ref={groundVideoRef} autoPlay playsInline muted className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black" />
-              {autoGroundDetections.length ? (
-                <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${autoGroundImageSize.width || 1} ${autoGroundImageSize.height || 1}`} preserveAspectRatio="none">
-                  {autoGroundDetections.map((detection, idx) => {
-                    const box = Array.isArray(detection.box) && detection.box.length === 4 ? detection.box : null;
-                    const gp = Array.isArray(detection.ground_point) && detection.ground_point.length === 2 ? detection.ground_point : null;
-                    return (
-                      <g key={`live-det-w-${detection.id || idx}`}>
-                        {box ? <rect x={box[0]} y={box[1]} width={Math.max(0, box[2] - box[0])} height={Math.max(0, box[3] - box[1])} fill="rgba(250,204,21,0.05)" stroke="#eab308" strokeWidth="2" /> : null}
-                        {gp ? <circle cx={gp[0]} cy={gp[1]} r="5" fill="#facc15" stroke="#713f12" strokeWidth="1.5" /> : null}
-                      </g>
-                    );
-                  })}
-                </svg>
-              ) : null}
+              <video
+                ref={groundVideoRef}
+                autoPlay playsInline muted
+                onLoadedMetadata={onLiveFeedLoad}
+                className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black"
+              />
+              {pickingOverlay}
             </div>
           ) : feedEnabled ? (
             <div className="relative">
-              <img src={liveFeedSrc} onError={onFeedError} onLoad={clearFeedError} alt="Ground feed" className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black" />
-              {autoGroundDetections.length ? (
-                <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${autoGroundImageSize.width || 1} ${autoGroundImageSize.height || 1}`} preserveAspectRatio="none">
-                  {autoGroundDetections.map((detection, idx) => {
-                    const box = Array.isArray(detection.box) && detection.box.length === 4 ? detection.box : null;
-                    const gp = Array.isArray(detection.ground_point) && detection.ground_point.length === 2 ? detection.ground_point : null;
-                    return (
-                      <g key={`live-det-r-${detection.id || idx}`}>
-                        {box ? <rect x={box[0]} y={box[1]} width={Math.max(0, box[2] - box[0])} height={Math.max(0, box[3] - box[1])} fill="rgba(250,204,21,0.05)" stroke="#eab308" strokeWidth="2" /> : null}
-                        {gp ? <circle cx={gp[0]} cy={gp[1]} r="5" fill="#facc15" stroke="#713f12" strokeWidth="1.5" /> : null}
-                      </g>
-                    );
-                  })}
-                </svg>
-              ) : null}
+              <img
+                ref={liveFeedImgRef}
+                src={liveFeedSrc}
+                onError={onFeedError}
+                onLoad={(e) => { clearFeedError(e); onLiveFeedLoad(e); }}
+                alt="Ground feed"
+                className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black"
+              />
+              {pickingOverlay}
             </div>
           ) : null}
+          <div className="text-xs text-zinc-400">Click directly on the live feed above to pick ground points. Use <em>Capture Reference Frame</em> only when running AI detection.</div>
           <div className="flex flex-wrap gap-2">
-            <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Snapshot for Point Mapping</button>
+            <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Reference Frame</button>
             <button
               onClick={detectAutoGroundPoints}
-              disabled={!snapshotDataUrl || autoGroundLoading}
+              disabled={autoGroundLoading}
               className="rounded border border-sky-700 bg-sky-900/40 px-3 py-2 text-sm hover:bg-sky-800/50 disabled:opacity-40"
             >
               {autoGroundLoading ? "Detecting Human Ground Points..." : "Detect Human Ground Points"}
@@ -227,155 +336,10 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
             </div>
           ) : null}
           {snapshotDataUrl ? (
-            <div className="space-y-1">
-              <div className="text-[11px] text-zinc-400">Left click to add image point. Drag green points to adjust. In Validation mode, each click is auto-projected onto CAD.</div>
-              <div className="rounded border border-zinc-700">
-                <div className="relative w-full">
-                  <img
-                    ref={snapshotImgRef}
-                    src={snapshotDataUrl}
-                    onLoad={onSnapshotImageLoad}
-                    alt="Ground snapshot"
-                    className="w-full max-h-[320px] rounded bg-black object-contain"
-                  />
-                  <svg
-                    ref={snapshotOverlayRef}
-                    onClick={onSnapshotPick}
-                    className="absolute inset-0 h-full w-full cursor-crosshair"
-                    viewBox={`0 0 ${snapshotNaturalSize.width} ${snapshotNaturalSize.height}`}
-                    preserveAspectRatio="none"
-                  >
-                    {polygonImagePoints.length >= 2 ? (
-                      <polyline
-                        points={polygonImagePoints.map((p) => `${p[0]},${p[1]}`).join(" ")}
-                        fill="none"
-                        stroke="#22d3ee"
-                        strokeWidth="2"
-                        strokeDasharray="6 4"
-                      />
-                    ) : null}
-                    {polygonImagePoints.map((p, idx) => (
-                      <g key={`poly-img-${idx}`}>
-                        <circle cx={p[0]} cy={p[1]} r="6" fill="#06b6d4" stroke="#164e63" strokeWidth="2" />
-                        <text x={p[0] + 8} y={p[1] - 8} fill="#67e8f9" fontSize="12" fontWeight="700">P{idx + 1}</text>
-                      </g>
-                    ))}
-                    {correspondences.length >= 2 ? (
-                      <polygon
-                        points={correspondences.map((p) => `${p.pixel[0]},${p.pixel[1]}`).join(" ")}
-                        fill="rgba(34,197,94,0.15)"
-                        stroke="#22c55e"
-                        strokeWidth="2"
-                      />
-                    ) : null}
-                    {correspondences.map((p, idx) => (
-                      <g key={`img-p-${idx}`}>
-                        <circle
-                          cx={p.pixel[0]}
-                          cy={p.pixel[1]}
-                          r="9"
-                          fill="#22c55e"
-                          stroke="#052e16"
-                          strokeWidth="2"
-                          onMouseDown={(e) => onImagePointMouseDown(idx, e)}
-                          style={{ cursor: "grab" }}
-                        />
-                        <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#22c55e" fontSize="16" fontWeight="700">{p.markerId || idx + 1}</text>
-                      </g>
-                    ))}
-                    {validationPairs.map((p, idx) => (
-                      <g key={`val-p-${idx}`}>
-                        <circle
-                          cx={p.pixel[0]}
-                          cy={p.pixel[1]}
-                          r="8"
-                          fill="#f59e0b"
-                          stroke="#7c2d12"
-                          strokeWidth="2"
-                        />
-                        <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">V{idx + 1}</text>
-                      </g>
-                    ))}
-                    {autoGroundDetections.map((detection, idx) => {
-                      const box = Array.isArray(detection.box) && detection.box.length === 4 ? detection.box : null;
-                      const groundPoint = Array.isArray(detection.ground_point) && detection.ground_point.length === 2 ? detection.ground_point : null;
-                      const leftAnkle = Array.isArray(detection.left_ankle) && detection.left_ankle.length === 2 ? detection.left_ankle : null;
-                      const rightAnkle = Array.isArray(detection.right_ankle) && detection.right_ankle.length === 2 ? detection.right_ankle : null;
-                      return (
-                        <g key={detection.id || `det-${idx}`} opacity={0.85} pointerEvents="none">
-                          {box ? (
-                            <rect
-                              x={box[0]}
-                              y={box[1]}
-                              width={Math.max(0, box[2] - box[0])}
-                              height={Math.max(0, box[3] - box[1])}
-                              fill="rgba(250,204,21,0.04)"
-                              stroke={detection.passes_person_threshold ? "#eab308" : "#a3a3a3"}
-                              strokeWidth="2"
-                            />
-                          ) : null}
-                          {leftAnkle ? <circle cx={leftAnkle[0]} cy={leftAnkle[1]} r="4" fill="#fde047" /> : null}
-                          {rightAnkle ? <circle cx={rightAnkle[0]} cy={rightAnkle[1]} r="4" fill="#fde047" /> : null}
-                          {groundPoint ? <circle cx={groundPoint[0]} cy={groundPoint[1]} r="5" fill="#facc15" stroke="#713f12" strokeWidth="1.5" /> : null}
-                          <text
-                            x={(box ? box[0] : (groundPoint ? groundPoint[0] : 12)) + 6}
-                            y={(box ? box[1] : (groundPoint ? groundPoint[1] : 18)) - 6}
-                            fill="#facc15"
-                            fontSize="12"
-                            fontWeight="700"
-                          >
-                            H{idx + 1}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    {autoGroundSuggestions.map((suggestion, idx) => {
-                      const active = pendingAutoGroundIndex === idx;
-                      const box = Array.isArray(suggestion.box) && suggestion.box.length === 4 ? suggestion.box : null;
-                      return (
-                        <g key={suggestion.id || `auto-ground-${idx}`} opacity={active ? 1 : 0.95} pointerEvents="none">
-                          {box ? (
-                            <rect
-                              x={box[0]}
-                              y={box[1]}
-                              width={Math.max(0, box[2] - box[0])}
-                              height={Math.max(0, box[3] - box[1])}
-                              fill="rgba(14,165,233,0.05)"
-                              stroke={active ? "#0ea5e9" : "#38bdf8"}
-                              strokeDasharray="8 6"
-                              strokeWidth="2"
-                            />
-                          ) : null}
-                          <circle
-                            cx={suggestion.pixel[0]}
-                            cy={suggestion.pixel[1]}
-                            r={active ? "10" : "8"}
-                            fill={active ? "#0ea5e9" : "#38bdf8"}
-                            stroke="#082f49"
-                            strokeWidth="2"
-                          />
-                          <text
-                            x={suggestion.pixel[0] + 10}
-                            y={suggestion.pixel[1] - 10}
-                            fill={active ? "#7dd3fc" : "#38bdf8"}
-                            fontSize="14"
-                            fontWeight="700"
-                          >
-                            A{idx + 1}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    {pendingImagePoint ? (
-                      <g>
-                        <circle cx={pendingImagePoint[0]} cy={pendingImagePoint[1]} r="7" fill="#f59e0b" />
-                        <text x={pendingImagePoint[0] + 10} y={pendingImagePoint[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">{imagePickMode === "validation" ? "V" : imagePickMode === "shared-marker" ? "S" : "P"}</text>
-                      </g>
-                    ) : null}
-                  </svg>
-                </div>
-              </div>
-            </div>
+            <details className="rounded border border-zinc-700 bg-zinc-950/30 p-2 text-[11px] text-zinc-400">
+              <summary className="cursor-pointer">Reference frame (for AI detection)</summary>
+              <img ref={snapshotImgRef} src={snapshotDataUrl} onLoad={onSnapshotImageLoad} alt="Reference frame" className="mt-2 w-full max-h-[180px] rounded object-contain bg-black" />
+            </details>
           ) : null}
           <div className="flex flex-wrap gap-2">
             <button onClick={undoPair} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Undo Pair</button>

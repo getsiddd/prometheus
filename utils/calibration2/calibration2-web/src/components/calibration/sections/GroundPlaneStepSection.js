@@ -42,17 +42,18 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     pnpSolveResult = null,
     cameraPosition = null,
     cameraIntrinsic = null,
+    liveKeypoints = [],
+    liveKeypointsImageSize = { width: 1, height: 1 },
+    liveKeypointsRunning = false,
   } = data;
 
   const {
     setGroundPickMode,
     setValidationPickMode,
     beginSharedMarkerCapture,
-    autoPlaceMarkersFromSolvedCameras,
     onFeedError,
     clearFeedError,
     captureSnapshotWeb,
-    detectAutoGroundPoints,
     setGroundMappingMode,
     setManualWorldInput,
     addManualCoordinatePair,
@@ -204,6 +205,33 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     </svg>
   );
 
+  // Live ORB keypoints layer: pointer-events-none, rendered at liveKeypointsImageSize resolution
+  const keypointsOverlay = liveKeypoints.length > 0 ? (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox={`0 0 ${liveKeypointsImageSize.width || 1} ${liveKeypointsImageSize.height || 1}`}
+      preserveAspectRatio="none"
+    >
+      {liveKeypoints.slice(0, 600).map((kp, idx) => (
+        <circle
+          key={`kp-${idx}`}
+          cx={kp.x}
+          cy={kp.y}
+          r="2.5"
+          fill="rgba(99,102,241,0.55)"
+          stroke="rgba(165,180,252,0.4)"
+          strokeWidth="0.5"
+        />
+      ))}
+    </svg>
+  ) : null;
+            {imagePickMode === "validation" ? "V" : imagePickMode === "shared-marker" ? "S" : "P"}
+          </text>
+        </g>
+      ) : null}
+    </svg>
+  );
+
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
       <h2 className="text-xl font-semibold">Step 2: Ground Plane Calibration</h2>
@@ -277,7 +305,6 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
               Validation Pick Mode
             </button>
             <button onClick={beginSharedMarkerCapture} className="rounded border border-blue-700 bg-blue-900/30 px-2 py-1 text-xs hover:bg-blue-800/40">Shared Marker Mode</button>
-            <button onClick={autoPlaceMarkersFromSolvedCameras} className="rounded border border-violet-700 bg-violet-900/30 px-2 py-1 text-xs hover:bg-violet-800/40">Auto-Place Markers (LoFTR/AI)</button>
           </div>
           <div className={`text-xs ${groundValidationReadiness?.enabled ? "text-emerald-300" : "text-amber-300"}`}>
             Validation unlock: {groundValidationReadiness?.status || "Not ready"}
@@ -290,6 +317,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
                 onLoadedMetadata={onLiveFeedLoad}
                 className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black"
               />
+              {keypointsOverlay}
               {pickingOverlay}
             </div>
           ) : feedEnabled ? (
@@ -302,19 +330,19 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
                 alt="Ground feed"
                 className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black"
               />
+              {keypointsOverlay}
               {pickingOverlay}
             </div>
           ) : null}
-          <div className="text-xs text-zinc-400">Click directly on the live feed above to pick ground points. Use <em>Capture Reference Frame</em> only when running AI detection.</div>
+          <div className="text-xs text-zinc-400">
+            Click directly on the live feed above to pick ground points.
+            AI human detection, feature extraction, and multi-camera marker placement
+            run automatically when <em>Run Ground Plane Stage</em> is started.
+            {liveKeypointsRunning ? <span className="ml-2 text-indigo-400">● extracting features…</span> : null}
+            {liveKeypoints.length > 0 && !liveKeypointsRunning ? <span className="ml-2 text-indigo-300">{liveKeypoints.length} live features</span> : null}
+          </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Reference Frame</button>
-            <button
-              onClick={detectAutoGroundPoints}
-              disabled={autoGroundLoading}
-              className="rounded border border-sky-700 bg-sky-900/40 px-3 py-2 text-sm hover:bg-sky-800/50 disabled:opacity-40"
-            >
-              {autoGroundLoading ? "Detecting Human Ground Points..." : "Detect Human Ground Points"}
-            </button>
           </div>
           <p className="text-xs text-zinc-400">{snapshotStatus}</p>
           <p className={`text-xs ${autoGroundSuggestions.length ? "text-sky-300" : "text-zinc-400"}`}>{autoGroundStatus}</p>

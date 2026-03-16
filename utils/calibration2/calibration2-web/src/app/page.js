@@ -171,6 +171,10 @@ export function CalibrationConsole({
   const [autoGroundStatus, setAutoGroundStatus] = useState("No automatic human ground detection run yet.");
   const [autoGroundLoading, setAutoGroundLoading] = useState(false);
   const [pendingAutoGroundIndex, setPendingAutoGroundIndex] = useState(null);
+  const [liveKeypoints, setLiveKeypoints] = useState([]);
+  const [liveKeypointsImageSize, setLiveKeypointsImageSize] = useState({ width: 1, height: 1 });
+  const [liveKeypointsRunning, setLiveKeypointsRunning] = useState(false);
+  const liveKeypointsPollRef = useRef(null);
   const [intrinsicSessionId, setIntrinsicSessionId] = useState("default");
   const [intrinsicStatus, setIntrinsicStatus] = useState("No intrinsic samples captured yet.");
   const [intrinsicSampleCount, setIntrinsicSampleCount] = useState(0);
@@ -2013,6 +2017,31 @@ export function CalibrationConsole({
   }
 
   async function runStageCard(stage) {
+    // Ground-plane: auto-capture reference frame, then detect humans + extract
+    // features before starting the stage job.
+    if (stage === "ground-plane") {
+      setStageJobState((prev) => ({
+        ...prev,
+        [stage]: { status: "starting", progress: 0, logs: ["Auto-capturing reference frame…"] },
+      }));
+      try {
+        const frameUrl = await captureSnapshotWeb();
+        if (frameUrl) {
+          // fire-and-forget: detection + feature extraction run in parallel
+          detectAutoGroundPoints().catch((err) =>
+            console.warn("[auto-detect] ground pose:", err)
+          );
+          extractLiveKeypoints(frameUrl).catch((err) =>
+            console.warn("[auto-detect] keypoints:", err)
+          );
+          // Multi-camera auto placement (silent – no error modal if conditions not met)
+          autoPlaceMarkersFromSolvedCameras().catch(() => {});
+        }
+      } catch (_) {
+        // capture failure is non-fatal – the stage can still run
+      }
+    }
+
     const readiness = getStageReadiness(stage);
     if (!readiness.enabled) {
       const msg = readiness.status;
@@ -2592,6 +2621,52 @@ export function CalibrationConsole({
     setPendingImagePoint(null);
     setAutoGroundStatus("Automatic human ground suggestions cleared.");
   }
+
+  // ── Live feature extraction ─────────────────────────────────────────────
+  async function extractLiveKeypoints(frameDataUrl) {
+    if (liveKeypointsRunning) return;
+    let imageUrl = frameDataUrl;
+    try {
+      setLiveKeypointsRunning(true);
+      if (!imageUrl) {
+        imageUrl = await captureSnapshotWeb();
+        if (!imageUrl) return;
+      }
+      const res = await fetch("/api/calibration/web/extract-keypoints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl: imageUrl, maxFeatures: 2000, maxSide: 1280 }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const result = data?.result || data;
+      if (Array.isArray(result?.keypoints)) {
+        setLiveKeypoints(result.keypoints);
+        setLiveKeypointsImageSize({
+          width: Number(result.image_width || 1),
+          height: Number(result.image_height || 1),
+        });
+      }
+    } catch (_) {
+      // non-critical: feature overlay is best-effort
+    } finally {
+      setLiveKeypointsRunning(false);
+    }
+  }
+
+  // Poll live features every 4 s while the ground-plane section is active
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const shouldPoll = enabledStageSet.has("ground-plane") && (feedEnabled || sourceMode === "webcam");
+    if (!shouldPoll) return undefined;
+    const id = setInterval(() => {
+      if (!liveKeypointsRunning) {
+        extractLiveKeypoints(null).catch(() => {});
+      }
+    }, 4000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledStageSet, feedEnabled, sourceMode]);
 
   function deleteAutoGroundSuggestion(index) {
     const shouldClearPending = pendingAutoGroundIndex === index;
@@ -4062,11 +4137,9 @@ export function CalibrationConsole({
             setGroundPickMode,
             setValidationPickMode,
             beginSharedMarkerCapture,
-            autoPlaceMarkersFromSolvedCameras,
             onFeedError,
             clearFeedError,
             captureSnapshotWeb,
-            detectAutoGroundPoints,
             setGroundMappingMode,
             setManualWorldInput,
             addManualCoordinatePair,

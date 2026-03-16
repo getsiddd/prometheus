@@ -110,23 +110,29 @@ class MultiViewFeatureMatchingService:
             confidence = confidence.detach().cpu().numpy().reshape(-1)
 
         if len(keypoints_a) == 0:
-            return {"method": "loftr", "matches": []}
+            return {"method": "loftr", "matches": [], "points_a": [], "points_b": []}
 
         order = np.argsort(-confidence)
         if max_matches_per_pair > 0:
             order = order[:max_matches_per_pair]
 
         matches = []
+        points_a = []
+        points_b = []
         for idx in order:
+            pa = [float(keypoints_a[idx][0]), float(keypoints_a[idx][1])]
+            pb = [float(keypoints_b[idx][0]), float(keypoints_b[idx][1])]
             matches.append(
                 {
-                    "pixel_a": [float(keypoints_a[idx][0]), float(keypoints_a[idx][1])],
-                    "pixel_b": [float(keypoints_b[idx][0]), float(keypoints_b[idx][1])],
+                    "pixel_a": pa,
+                    "pixel_b": pb,
                     "confidence": float(confidence[idx]),
                 }
             )
+            points_a.append(pa)
+            points_b.append(pb)
 
-        return {"method": "loftr", "matches": matches}
+        return {"method": "loftr", "matches": matches, "points_a": points_a, "points_b": points_b}
 
     @staticmethod
     def _orb_confidence(distance):
@@ -140,7 +146,7 @@ class MultiViewFeatureMatchingService:
         kp_b, des_b = orb.detectAndCompute(image_b, None)
 
         if des_a is None or des_b is None or len(kp_a) == 0 or len(kp_b) == 0:
-            return {"method": "orb", "matches": []}
+            return {"method": "orb", "matches": [], "points_a": [], "points_b": []}
 
         matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         raw_matches = matcher.match(des_a, des_b)
@@ -150,18 +156,56 @@ class MultiViewFeatureMatchingService:
             raw_matches = raw_matches[:max_matches_per_pair]
 
         matches = []
+        points_a = []
+        points_b = []
         for item in raw_matches:
             p_a = kp_a[item.queryIdx].pt
             p_b = kp_b[item.trainIdx].pt
+            pa = [float(p_a[0]), float(p_a[1])]
+            pb = [float(p_b[0]), float(p_b[1])]
             matches.append(
                 {
-                    "pixel_a": [float(p_a[0]), float(p_a[1])],
-                    "pixel_b": [float(p_b[0]), float(p_b[1])],
+                    "pixel_a": pa,
+                    "pixel_b": pb,
                     "confidence": self._orb_confidence(item.distance),
                 }
             )
+            points_a.append(pa)
+            points_b.append(pb)
 
-        return {"method": "orb", "matches": matches}
+        return {"method": "orb", "matches": matches, "points_a": points_a, "points_b": points_b}
+
+    @staticmethod
+    def _estimate_pair_homography(points_a: list, points_b: list):
+        """Estimate planar homography using full-image correspondences."""
+        if len(points_a) < 4 or len(points_b) < 4 or len(points_a) != len(points_b):
+            return None
+
+        src = np.array(points_a, dtype=np.float32).reshape(-1, 1, 2)
+        dst = np.array(points_b, dtype=np.float32).reshape(-1, 1, 2)
+        H, mask = cv2.findHomography(src, dst, method=cv2.RANSAC, ransacReprojThreshold=4.0)
+        if H is None:
+            return None
+
+        mask_arr = mask.reshape(-1) if mask is not None else np.ones((len(points_a),), dtype=np.uint8)
+        inliers = int(np.sum(mask_arr))
+        total = int(len(points_a))
+        ratio = float(inliers / total) if total > 0 else 0.0
+        return {
+            "H": H,
+            "inlier_count": inliers,
+            "total_match_count": total,
+            "inlier_ratio": ratio,
+        }
+
+    @staticmethod
+    def _pair_similarity(matches: list, inlier_ratio: float):
+        """Compute a bounded similarity score from confidence and geometric consistency."""
+        if not matches:
+            return 0.0
+        conf = [float(item.get("confidence", 0.0)) for item in matches]
+        conf_mean = float(np.mean(conf)) if conf else 0.0
+        return float(max(0.0, min(1.0, 0.55 * conf_mean + 0.45 * float(inlier_ratio))))
 
     def _match_pair(self, image_a, image_b, method, max_features, max_matches_per_pair):
         """Match a camera pair using selected method with deep-first auto mode."""
@@ -179,6 +223,37 @@ class MultiViewFeatureMatchingService:
                     raise RuntimeError(f"LoFTR matching failed: {exc}") from exc
 
         return self._match_pair_orb(image_a, image_b, max_features, max_matches_per_pair)
+
+    def extract_single_image_keypoints(self, image_path: str, options: dict | None = None) -> dict:
+        """Extract all ORB keypoints from a single image for live feature overlay."""
+        options = options or {}
+        max_features = max(128, self._safe_int(options.get("max_features"), 2000))
+        max_side = max(320, self._safe_int(options.get("max_side"), 1280))
+
+        image_gray, scale = self._read_gray(image_path, max_side)
+        orig_h = int(round(image_gray.shape[0] / scale)) if scale > 0 else image_gray.shape[0]
+        orig_w = int(round(image_gray.shape[1] / scale)) if scale > 0 else image_gray.shape[1]
+
+        orb = cv2.ORB_create(nfeatures=max_features)
+        kps = orb.detect(image_gray, None)
+
+        keypoints = []
+        for kp in kps:
+            x = float(kp.pt[0]) / float(scale) if scale > 0 else float(kp.pt[0])
+            y = float(kp.pt[1]) / float(scale) if scale > 0 else float(kp.pt[1])
+            score = float(kp.response)
+            keypoints.append({"x": x, "y": y, "score": score})
+
+        # Sort descending by response strength
+        keypoints.sort(key=lambda k: -k["score"])
+
+        return {
+            "method": "orb",
+            "image_width": orig_w,
+            "image_height": orig_h,
+            "count": len(keypoints),
+            "keypoints": keypoints,
+        }
 
     def build_shared_markers_from_cameras(self, cameras: list[dict], options: dict | None = None):
         """Build marker observation graph from multi-camera image matching."""
@@ -221,6 +296,7 @@ class MultiViewFeatureMatchingService:
         anchor = camera_frames[anchor_camera_id]
         marker_bins = {}
         pair_stats = []
+        pair_models = []
 
         for camera_id, payload in camera_frames.items():
             if camera_id == anchor_camera_id:
@@ -233,6 +309,10 @@ class MultiViewFeatureMatchingService:
                 max_features=max_features,
                 max_matches_per_pair=max_matches_per_pair,
             )
+
+            pair_h = self._estimate_pair_homography(matched.get("points_a") or [], matched.get("points_b") or [])
+            inlier_ratio = float(pair_h["inlier_ratio"]) if pair_h is not None else 0.0
+            similarity = self._pair_similarity(matched.get("matches") or [], inlier_ratio)
 
             kept = 0
             for item in matched["matches"]:
@@ -271,8 +351,24 @@ class MultiViewFeatureMatchingService:
                     "method": matched["method"],
                     "raw_match_count": len(matched["matches"]),
                     "kept_match_count": kept,
+                    "global_similarity": similarity,
+                    "inlier_ratio": inlier_ratio,
                 }
             )
+
+            if pair_h is not None:
+                pair_models.append(
+                    {
+                        "camera_a": anchor_camera_id,
+                        "camera_b": camera_id,
+                        "method": matched["method"],
+                        "homography": pair_h["H"].tolist(),
+                        "inlier_count": int(pair_h["inlier_count"]),
+                        "total_match_count": int(pair_h["total_match_count"]),
+                        "inlier_ratio": float(pair_h["inlier_ratio"]),
+                        "global_similarity": similarity,
+                    }
+                )
 
         markers = []
         marker_idx = 1
@@ -297,6 +393,7 @@ class MultiViewFeatureMatchingService:
             "method_requested": method,
             "pair_count": len(pair_stats),
             "pair_stats": pair_stats,
+            "pair_models": pair_models,
             "marker_count": len(markers),
             "markers": markers,
         }

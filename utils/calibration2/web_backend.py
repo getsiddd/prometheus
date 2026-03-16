@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_match.add_argument("--cameras-json", required=True)
     add_matching_args(p_match)
 
+    p_kp = sub.add_parser("extract-keypoints")
+    p_kp.add_argument("--image", required=True)
+    p_kp.add_argument("--max-features", type=int, default=2000)
+    p_kp.add_argument("--max-side", type=int, default=1280)
+
     return parser
 
 
@@ -175,6 +180,14 @@ def main() -> None:
     if args.cmd == "match-features-multiview":
         cameras = load_json_arg(args.cameras_json, "--cameras-json")
         result = backend.match_multiview_features(cameras, match_options=build_match_options(args))
+        print(json.dumps({"ok": True, "result": result}))
+        return
+
+    if args.cmd == "extract-keypoints":
+        result = backend.extract_image_keypoints(
+            args.image,
+            options={"max_features": args.max_features, "max_side": args.max_side},
+        )
         print(json.dumps({"ok": True, "result": result}))
         return
 

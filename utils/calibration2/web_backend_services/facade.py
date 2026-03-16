@@ -104,6 +104,9 @@ class WebCalibrationBackend:
             min_keypoint_score=min_keypoint_score,
         )
 
+    def extract_image_keypoints(self, image: str, options: dict | None = None):
+        return self.feature_matching_service.extract_single_image_keypoints(image, options)
+
     def match_multiview_features(self, cameras: list[dict], match_options: dict | None = None):
         return self.feature_matching_service.build_shared_markers_from_cameras(cameras, match_options)
 

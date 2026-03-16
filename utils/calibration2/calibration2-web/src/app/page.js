@@ -299,6 +299,18 @@ export function CalibrationConsole({
     return JSON.parse(JSON.stringify(value));
   }
 
+  async function readJsonResponseSafe(response) {
+    const text = await response.text();
+    if (!text || !text.trim()) {
+      return null;
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Invalid JSON response (HTTP ${response.status})`);
+    }
+  }
+
   function normalizeCorrespondenceList(pairs) {
     if (!Array.isArray(pairs)) {
       return [];
@@ -1031,7 +1043,7 @@ export function CalibrationConsole({
         }),
       });
 
-      const data = await res.json();
+      const data = await readJsonResponseSafe(res);
       if (!res.ok) {
         throw new Error(data?.error || "Auto feature matching failed");
       }
@@ -1143,10 +1155,12 @@ export function CalibrationConsole({
       setProjectStatus(
         `Feature source: anchor '${anchorCameraId}', solved cameras used: ${Array.from(added).join(", ")}. Marker sources: ${sourceSummary || "n/a"}.`
       );
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Automatic marker placement failed";
       setSolveStatus(message);
       setProjectStatus(message);
+      return false;
     }
   }
 
@@ -2477,7 +2491,7 @@ export function CalibrationConsole({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ imageDataUrl }),
         });
-        const saveData = await saveRes.json();
+        const saveData = await readJsonResponseSafe(saveRes);
         if (!saveRes.ok) {
           throw new Error(saveData?.error || "Webcam snapshot save failed");
         }
@@ -2491,7 +2505,7 @@ export function CalibrationConsole({
         setAutoGroundLogs([]);
         setAutoGroundImageSize({ width: 1, height: 1 });
         setPendingAutoGroundIndex(null);
-        setAutoGroundStatus("Reference frame ready. Run human ground detection.");
+        setAutoGroundStatus("Reference frame ready. Auto ground prep will continue in background.");
         return capturedWebcamUrl;
       }
 
@@ -2500,7 +2514,7 @@ export function CalibrationConsole({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sourceUrl }),
       });
-      const data = await res.json();
+      const data = await readJsonResponseSafe(res);
       if (!res.ok) {
         throw new Error(data?.error || "Snapshot capture failed");
       }
@@ -2514,7 +2528,7 @@ export function CalibrationConsole({
       setAutoGroundLogs([]);
       setAutoGroundImageSize({ width: 1, height: 1 });
       setPendingAutoGroundIndex(null);
-      setAutoGroundStatus("Reference frame ready. Run human ground detection.");
+      setAutoGroundStatus("Reference frame ready. Auto ground prep will continue in background.");
       return capturedUrl;
     } catch (err) {
       setSnapshotStatus(err instanceof Error ? err.message : "Snapshot capture failed");
@@ -2522,12 +2536,12 @@ export function CalibrationConsole({
     }
   }
 
-  async function detectAutoGroundPoints() {
+  async function detectAutoGroundPoints(initialImageUrl = "") {
     try {
       setAutoGroundLoading(true);
       setAutoGroundLogs([]);
 
-      let imageUrl = snapshotDataUrl;
+      let imageUrl = initialImageUrl || snapshotDataUrl;
       if (!imageUrl) {
         setAutoGroundStatus("Capturing reference frame before detection...");
         imageUrl = await captureSnapshotWeb();
@@ -2548,7 +2562,7 @@ export function CalibrationConsole({
           minKeypointScore: 0.35,
         }),
       });
-      const data = await res.json();
+      const data = await readJsonResponseSafe(res);
       if (!res.ok) {
         throw new Error(data?.error || "Automatic human ground detection failed");
       }
@@ -2581,8 +2595,10 @@ export function CalibrationConsole({
           ? `Detected ${detectionCount} human${detectionCount === 1 ? "" : "s"}; ${count} automatic ground suggestion${count === 1 ? "" : "s"} using ${device} inference.${modelSuffix} Select one and then pick the matching CAD point.`
           : `Detected ${detectionCount} human${detectionCount === 1 ? "" : "s"}, but no valid ground suggestion points.${modelSuffix} Try a clearer snapshot with visible feet or full body pose.`
       );
+      return true;
     } catch (err) {
       setAutoGroundStatus(err instanceof Error ? err.message : "Automatic human ground detection failed");
+      return false;
     } finally {
       setAutoGroundLoading(false);
     }
@@ -2614,8 +2630,10 @@ export function CalibrationConsole({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageDataUrl: imageUrl, maxFeatures: 2000, maxSide: 1280 }),
       });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await readJsonResponseSafe(res);
+      if (!res.ok) {
+        return false;
+      }
       const result = data?.result || data;
       if (Array.isArray(result?.keypoints)) {
         setLiveKeypoints(result.keypoints);
@@ -2624,8 +2642,10 @@ export function CalibrationConsole({
           height: Number(result.image_height || 1),
         });
       }
+      return true;
     } catch (_) {
       // non-critical: feature overlay is best-effort
+      return false;
     } finally {
       setLiveKeypointsRunning(false);
     }
@@ -2653,13 +2673,18 @@ export function CalibrationConsole({
         return;
       }
 
-      await Promise.allSettled([
-        detectAutoGroundPoints(),
+      const prepResults = await Promise.allSettled([
+        detectAutoGroundPoints(frameUrl),
         extractLiveKeypoints(frameUrl),
         autoPlaceMarkersFromSolvedCameras(),
       ]);
 
-      autoGroundPrepDoneKeyRef.current = prepKey;
+      const anySuccess = prepResults.some((result) => result.status === "fulfilled" && result.value === true);
+      if (anySuccess) {
+        autoGroundPrepDoneKeyRef.current = prepKey;
+      } else {
+        setAutoGroundStatus("Auto-prep failed; retrying soon while feed is active...");
+      }
     } finally {
       autoGroundPrepRunningRef.current = false;
     }

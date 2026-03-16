@@ -1,19 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
 
 import { NextResponse } from "next/server";
+import { parseLastJson, runPython } from "@/lib/server/pythonRunner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function resolvePythonExecutable() {
-  const fromEnv = process.env.CALIBRATION_PYTHON;
-  if (fromEnv) {
-    return fromEnv;
-  }
-  return "/home/administrator/Projects/.venv/bin/python";
-}
 
 export async function POST(req) {
   const body = await req.json();
@@ -29,7 +21,6 @@ export async function POST(req) {
   await fs.mkdir(outputDir, { recursive: true });
   const outputYaml = path.join(outputDir, `${Date.now()}-calibration2.yaml`);
 
-  const python = resolvePythonExecutable();
   const script = path.resolve(process.cwd(), "..", "web_backend.py");
 
   const args = [
@@ -43,38 +34,9 @@ export async function POST(req) {
     outputYaml,
   ];
 
-  const result = await new Promise((resolve, reject) => {
-    const child = spawn(python, args, {
-      cwd: path.resolve(process.cwd(), ".."),
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+  const result = await runPython(args);
 
-    let out = "";
-    let err = "";
-
-    child.stdout.on("data", (chunk) => {
-      out += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      err += chunk.toString();
-    });
-
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(err || out || `solve failed with code ${code}`));
-        return;
-      }
-      resolve({ out, err });
-    });
-  });
-
-  let parsed = null;
-  try {
-    parsed = JSON.parse(String(result.out).trim().split(/\r?\n/).filter(Boolean).pop());
-  } catch {
-    parsed = { ok: true, raw: result.out };
-  }
+  const parsed = parseLastJson(result.out) || { ok: true, raw: result.out };
 
   return NextResponse.json({
     ok: true,

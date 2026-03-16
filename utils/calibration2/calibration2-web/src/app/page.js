@@ -1,6 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ProjectEntryPage from "@/components/project/ProjectEntryPage";
+import StageStatusCard from "@/components/calibration/StageStatusCard";
+import CombinedSequenceSection from "@/components/calibration/sections/CombinedSequenceSection";
+import CurrentJobSection from "@/components/calibration/sections/CurrentJobSection";
+import Cad3dStepSection from "@/components/calibration/sections/Cad3dStepSection";
+import GroundPlaneStepSection from "@/components/calibration/sections/GroundPlaneStepSection";
+import IntrinsicStepSection from "@/components/calibration/sections/IntrinsicStepSection";
+import LiveValidationSection from "@/components/calibration/sections/LiveValidationSection";
+import ProjectWorkflowSection from "@/components/calibration/sections/ProjectWorkflowSection";
+import RemainingStagesSection from "@/components/calibration/sections/RemainingStagesSection";
+import ZMappingStepSection from "@/components/calibration/sections/ZMappingStepSection";
 
 const STAGES = [
   "intrinsic",
@@ -12,353 +23,19 @@ const STAGES = [
   "overlay",
 ];
 
+const PROJECT_CALIBRATION_STAGES = [...STAGES];
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function ProjectedCadViewer({ segments, onPickWorld, pickedWorldPoints = [], title = "" }) {
-  const canvasRef = useRef(null);
-  const [yaw, setYaw] = useState(35);
-  const [pitch, setPitch] = useState(-28);
-  const [zoom, setZoom] = useState(1);
-  const [panX, setPanX] = useState(0);
-  const [panY, setPanY] = useState(0);
-  const dragRef = useRef({ dragging: false, mode: "rotate", x: 0, y: 0 });
-  const projectedRef = useRef([]);
-  const [hoveredPoint, setHoveredPoint] = useState(null);
-
-  const points = useMemo(() => {
-    const all = [];
-    for (const s of segments) {
-      all.push(s.a, s.b);
-    }
-    return all;
-  }, [segments]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#0f172a";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    if (!segments.length || !points.length) {
-      ctx.fillStyle = "#cbd5e1";
-      ctx.font = "14px sans-serif";
-      ctx.fillText("No preview geometry", 20, 30);
-      return;
-    }
-
-    const center = points.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1], acc[2] + p[2]], [0, 0, 0]);
-    center[0] /= points.length;
-    center[1] /= points.length;
-    center[2] /= points.length;
-
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let minZ = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    let maxZ = Number.NEGATIVE_INFINITY;
-    for (const p of points) {
-      minX = Math.min(minX, p[0]);
-      minY = Math.min(minY, p[1]);
-      minZ = Math.min(minZ, p[2]);
-      maxX = Math.max(maxX, p[0]);
-      maxY = Math.max(maxY, p[1]);
-      maxZ = Math.max(maxZ, p[2]);
-    }
-
-    const y = (yaw * Math.PI) / 180;
-    const x = (pitch * Math.PI) / 180;
-
-    const cy = Math.cos(y);
-    const sy = Math.sin(y);
-    const cx = Math.cos(x);
-    const sx = Math.sin(x);
-
-    const project = (p) => {
-      const px = p[0] - center[0];
-      const py = p[1] - center[1];
-      const pz = p[2] - center[2];
-
-      const yawX = px * cy - py * sy;
-      const yawY = px * sy + py * cy;
-
-      const pitchY = yawY * cx - pz * sx;
-      const pitchZ = yawY * sx + pz * cx;
-
-      const depth = 6 + pitchZ;
-      const scale = (120 / Math.max(depth, 0.8)) * zoom;
-      const sx2 = canvas.width / 2 + yawX * scale + panX;
-      const sy2 = canvas.height / 2 - pitchY * scale + panY;
-      return [sx2, sy2];
-    };
-
-    const projected = [];
-
-    const boxCorners = [
-      [minX, minY, minZ],
-      [maxX, minY, minZ],
-      [maxX, maxY, minZ],
-      [minX, maxY, minZ],
-      [minX, minY, maxZ],
-      [maxX, minY, maxZ],
-      [maxX, maxY, maxZ],
-      [minX, maxY, maxZ],
-    ];
-    const boxEdges = [
-      [0, 1], [1, 2], [2, 3], [3, 0],
-      [4, 5], [5, 6], [6, 7], [7, 4],
-      [0, 4], [1, 5], [2, 6], [3, 7],
-    ];
-
-    ctx.strokeStyle = "#334155";
-    ctx.lineWidth = 1;
-    for (const [a, b] of boxEdges) {
-      const p1 = project(boxCorners[a]);
-      const p2 = project(boxCorners[b]);
-      ctx.beginPath();
-      ctx.moveTo(p1[0], p1[1]);
-      ctx.lineTo(p2[0], p2[1]);
-      ctx.stroke();
-    }
-
-    const axisLen = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.35 || 1;
-    const c0 = center;
-    const xAxis = [c0[0] + axisLen, c0[1], c0[2]];
-    const yAxis = [c0[0], c0[1] + axisLen, c0[2]];
-    const zAxis = [c0[0], c0[1], c0[2] + axisLen];
-    const c2 = project(c0);
-    const x2 = project(xAxis);
-    const y2 = project(yAxis);
-    const z2 = project(zAxis);
-
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "#ef4444";
-    ctx.beginPath(); ctx.moveTo(c2[0], c2[1]); ctx.lineTo(x2[0], x2[1]); ctx.stroke();
-    ctx.strokeStyle = "#22c55e";
-    ctx.beginPath(); ctx.moveTo(c2[0], c2[1]); ctx.lineTo(y2[0], y2[1]); ctx.stroke();
-    ctx.strokeStyle = "#3b82f6";
-    ctx.beginPath(); ctx.moveTo(c2[0], c2[1]); ctx.lineTo(z2[0], z2[1]); ctx.stroke();
-    ctx.fillStyle = "#ef4444";
-    ctx.fillText("X", x2[0] + 4, x2[1] - 4);
-    ctx.fillStyle = "#22c55e";
-    ctx.fillText("Y", y2[0] + 4, y2[1] - 4);
-    ctx.fillStyle = "#3b82f6";
-    ctx.fillText("Z", z2[0] + 4, z2[1] - 4);
-
-    ctx.strokeStyle = "#22d3ee";
-    ctx.lineWidth = 1;
-    for (const seg of segments) {
-      const p1 = project(seg.a);
-      const p2 = project(seg.b);
-      projected.push({ world: seg.a, screen: p1 });
-      projected.push({ world: seg.b, screen: p2 });
-      ctx.beginPath();
-      ctx.moveTo(p1[0], p1[1]);
-      ctx.lineTo(p2[0], p2[1]);
-      ctx.stroke();
-    }
-
-    projectedRef.current = projected;
-
-    if (pickedWorldPoints.length) {
-      ctx.fillStyle = "#22c55e";
-      ctx.strokeStyle = "#22c55e";
-      for (let i = 0; i < pickedWorldPoints.length; i += 1) {
-        const wp = pickedWorldPoints[i];
-        const pp = project(wp);
-        ctx.beginPath();
-        ctx.arc(pp[0], pp[1], 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillText(String(i + 1), pp[0] + 7, pp[1] - 7);
-      }
-    }
-
-    if (hoveredPoint?.world) {
-      const hp = project(hoveredPoint.world);
-      ctx.fillStyle = "#f59e0b";
-      ctx.beginPath();
-      ctx.arc(hp[0], hp[1], 6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillText("preview", hp[0] + 8, hp[1] - 8);
-    }
-
-    if (title) {
-      ctx.fillStyle = "#e5e7eb";
-      ctx.font = "13px sans-serif";
-      ctx.fillText(title, 12, 22);
-    }
-  }, [segments, yaw, pitch, points, zoom, panX, panY, pickedWorldPoints, hoveredPoint, title]);
-
-  function onMouseDown(e) {
-    const mode = e.button === 2 ? "pan" : "rotate";
-    dragRef.current = {
-      dragging: true,
-      mode,
-      x: e.clientX,
-      y: e.clientY,
-    };
-  }
-
-  function onMouseMove(e) {
-    if (!dragRef.current.dragging) {
-      return;
-    }
-
-    const dx = e.clientX - dragRef.current.x;
-    const dy = e.clientY - dragRef.current.y;
-
-    dragRef.current.x = e.clientX;
-    dragRef.current.y = e.clientY;
-
-    if (dragRef.current.mode === "rotate") {
-      setYaw((v) => v - dx * 0.35);
-      setPitch((v) => v - dy * 0.35);
-    } else {
-      setPanX((v) => v + dx);
-      setPanY((v) => v + dy);
-    }
-
-    if (dragRef.current.dragging) {
-      setHoveredPoint(null);
-    }
-  }
-
-  function onMouseUp() {
-    dragRef.current.dragging = false;
-  }
-
-  function onWheel(e) {
-    e.preventDefault();
-    const next = e.deltaY < 0 ? zoom * 1.08 : zoom / 1.08;
-    setZoom(Math.max(0.2, Math.min(4, next)));
-  }
-
-  function onResetView() {
-    setYaw(35);
-    setPitch(-28);
-    setZoom(1);
-    setPanX(0);
-    setPanY(0);
-  }
-
-  function onCanvasClick(e) {
-    if (typeof onPickWorld !== "function") {
-      return;
-    }
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    let best = null;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (const item of projectedRef.current) {
-      const dx = item.screen[0] - x;
-      const dy = item.screen[1] - y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d < bestDist) {
-        bestDist = d;
-        best = item;
-      }
-    }
-
-    if (best && bestDist <= 24) {
-      onPickWorld(best.world);
-    }
-  }
-
-  function onCanvasMove(e) {
-    onMouseMove(e);
-    if (dragRef.current.dragging) {
-      return;
-    }
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    let best = null;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (const item of projectedRef.current) {
-      const dx = item.screen[0] - x;
-      const dy = item.screen[1] - y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d < bestDist) {
-        bestDist = d;
-        best = item;
-      }
-    }
-
-    if (best && bestDist <= 26) {
-      setHoveredPoint(best);
-    } else {
-      setHoveredPoint(null);
-    }
-  }
-
-  function applyPresetView(name) {
-    if (name === "front") {
-      setYaw(0);
-      setPitch(0);
-    } else if (name === "back") {
-      setYaw(180);
-      setPitch(0);
-    } else if (name === "left") {
-      setYaw(-90);
-      setPitch(0);
-    } else if (name === "right") {
-      setYaw(90);
-      setPitch(0);
-    } else if (name === "top") {
-      setYaw(0);
-      setPitch(-90);
-    } else if (name === "bottom") {
-      setYaw(0);
-      setPitch(90);
-    } else {
-      onResetView();
-    }
-  }
-
-  return (
-    <div className="space-y-3">
-      <canvas
-        ref={canvasRef}
-        width={620}
-        height={360}
-        onMouseDown={onMouseDown}
-        onMouseMove={onCanvasMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
-        onContextMenu={(e) => e.preventDefault()}
-        onWheel={onWheel}
-        onClick={onCanvasClick}
-        className="w-full rounded border border-zinc-700 cursor-grab active:cursor-grabbing"
-      />
-      <div className="flex items-center justify-between text-xs text-zinc-400">
-        <span>Mouse: Left drag rotate | Right drag pan | Wheel zoom</span>
-        <button onClick={onResetView} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Reset View</button>
-      </div>
-      <div className="text-xs text-zinc-500">Current view — Yaw: {yaw.toFixed(1)}°, Pitch: {pitch.toFixed(1)}°</div>
-      <div className="flex flex-wrap gap-2 text-xs">
-        <button onClick={() => applyPresetView("front")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Front</button>
-        <button onClick={() => applyPresetView("left")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Left</button>
-        <button onClick={() => applyPresetView("right")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Right</button>
-        <button onClick={() => applyPresetView("back")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Back</button>
-        <button onClick={() => applyPresetView("top")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Top</button>
-        <button onClick={() => applyPresetView("bottom")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Bottom</button>
-        <button onClick={() => applyPresetView("iso")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Iso</button>
-      </div>
-    </div>
-  );
-}
-
-export default function Home() {
+export function CalibrationConsole({
+  routeProjectId = "",
+  routeCameraId = "",
+  projectHomeHref = "",
+  nextCameraHref = "",
+  hideProjectWorkflow = false,
+}) {
   const [cameraType, setCameraType] = useState("cctv");
   const [sourceMode, setSourceMode] = useState("rtsp");
   const [sourceUrl, setSourceUrl] = useState("rtsp://camera-stream-url");
@@ -383,12 +60,50 @@ export default function Home() {
 
   const [sfmMessage, setSfmMessage] = useState("No SfM images uploaded yet.");
   const [overlayOpacity, setOverlayOpacity] = useState(65);
+  const [projectName, setProjectName] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
+  const [projectSharedDwgPath, setProjectSharedDwgPath] = useState("");
+  const [projectSharedDwgFileName, setProjectSharedDwgFileName] = useState("");
+  const [projectStatus, setProjectStatus] = useState("No multi-camera project loaded.");
+  const [projectConfigPath, setProjectConfigPath] = useState("");
+  const [projectOpenPath, setProjectOpenPath] = useState("");
+  const [loadedProjectId, setLoadedProjectId] = useState("");
+  const [projectDraftName, setProjectDraftName] = useState("multi-camera-project");
+  const [projectDraftDescription, setProjectDraftDescription] = useState("");
+  const [projectDraftSharedDwgPath, setProjectDraftSharedDwgPath] = useState("");
+  const [projectDraftCameras, setProjectDraftCameras] = useState([
+    {
+      id: "cam-1",
+      name: "Camera 1",
+      location: "",
+      cameraType: "cctv",
+      sourceMode: "rtsp",
+      sourceUrl: "",
+      intrinsicsPath: "",
+      checkerboard: "9x6",
+      squareSize: 0.024,
+      minSamples: 18,
+    },
+  ]);
+  const [projectCameras, setProjectCameras] = useState([]);
+  const [activeProjectCameraId, setActiveProjectCameraId] = useState("");
+  const [cameraWorkspaces, setCameraWorkspaces] = useState({});
+  const [sharedMarkers, setSharedMarkers] = useState([]);
+  const [pendingSharedMarkerIndex, setPendingSharedMarkerIndex] = useState(null);
+  const [projectSequenceRunning, setProjectSequenceRunning] = useState(false);
+  const [projectSequenceStatus, setProjectSequenceStatus] = useState("Project sequence idle.");
+  const [projectSequenceLogs, setProjectSequenceLogs] = useState([]);
+  const [projectRunStageChain, setProjectRunStageChain] = useState(false);
+  const [projectAutoTriangulate, setProjectAutoTriangulate] = useState(true);
+  const [triangulationStatus, setTriangulationStatus] = useState("No multi-camera triangulation run yet.");
+  const [triangulationResult, setTriangulationResult] = useState(null);
   const [feedEnabled, setFeedEnabled] = useState(false);
   const [feedNonce, setFeedNonce] = useState(0);
   const [feedError, setFeedError] = useState("");
   const [feedFps, setFeedFps] = useState(12);
   const [feedWidth, setFeedWidth] = useState(960);
   const [snapshotDataUrl, setSnapshotDataUrl] = useState("");
+  const [snapshotPath, setSnapshotPath] = useState("");
   const [snapshotStatus, setSnapshotStatus] = useState("No snapshot captured yet.");
   const [correspondenceText, setCorrespondenceText] = useState(
     '[\n  {"world":[0,0,0],"pixel":[100,100]},\n  {"world":[6,0,0],"pixel":[500,110]},\n  {"world":[6,4,0],"pixel":[520,320]},\n  {"world":[0,4,0],"pixel":[90,310]}\n]'
@@ -415,17 +130,18 @@ export default function Home() {
   const [selectedGroundPairIndex, setSelectedGroundPairIndex] = useState(0);
   const [zOffsetMeters, setZOffsetMeters] = useState(1.5);
   const [pendingZGroundIndex, setPendingZGroundIndex] = useState(null);
+  const [pendingZImageTip, setPendingZImageTip] = useState(null);
   const [webcamActive, setWebcamActive] = useState(false);
   const [webcamStatus, setWebcamStatus] = useState("Webcam not started.");
 
   const [stageOutputs, setStageOutputs] = useState({
-    intrinsic: "uploads/stages/intrinsic.npz",
-    "ground-plane": "uploads/stages/ground-plane.yaml",
-    "z-mapping": "uploads/stages/z-mapping.yaml",
-    "cad-3d-dwg": "uploads/stages/cad-3d.json",
-    extrinsic: "uploads/stages/extrinsic.yaml",
-    sfm: "uploads/stages/sfm.json",
-    overlay: "uploads/stages/overlay.json",
+    intrinsic: "",
+    "ground-plane": "",
+    "z-mapping": "",
+    "cad-3d-dwg": "",
+    extrinsic: "",
+    sfm: "",
+    overlay: "",
   });
   const [stageMessages, setStageMessages] = useState({
     intrinsic: "Ready",
@@ -459,16 +175,993 @@ export default function Home() {
     overlay: { status: "idle", progress: 0, logs: [] },
   });
   const [stageResolvedOutputs, setStageResolvedOutputs] = useState({});
+  const [stageOutputDetails, setStageOutputDetails] = useState({});
+  const [stageOutputLoading, setStageOutputLoading] = useState({});
+  const [intrinsicSolveResult, setIntrinsicSolveResult] = useState(null);
+  const [pnpSolveResult, setPnpSolveResult] = useState(null);
   const [snapshotNaturalSize, setSnapshotNaturalSize] = useState({ width: 1, height: 1 });
   const [draggingImagePointIndex, setDraggingImagePointIndex] = useState(null);
 
   const dwgInputRef = useRef(null);
   const sfmInputRef = useRef(null);
+  const projectConfigInputRef = useRef(null);
+  const projectSharedDwgInputRef = useRef(null);
   const snapshotImgRef = useRef(null);
   const snapshotOverlayRef = useRef(null);
   const webcamVideoRef = useRef(null);
   const intrinsicVideoRef = useRef(null);
   const groundVideoRef = useRef(null);
+  const cadPreviewAttemptedPathRef = useRef("");
+
+  function deepClone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalizeCorrespondenceList(pairs) {
+    if (!Array.isArray(pairs)) {
+      return [];
+    }
+    const normalized = [];
+    for (let i = 0; i < pairs.length; i += 1) {
+      const item = pairs[i];
+      if (!item || !Array.isArray(item.world) || item.world.length !== 3 || !Array.isArray(item.pixel) || item.pixel.length !== 2) {
+        continue;
+      }
+      normalized.push({
+        markerId: String(item.markerId || `m${i + 1}`),
+        world: [Number(item.world[0]), Number(item.world[1]), Number(item.world[2])],
+        pixel: [Number(item.pixel[0]), Number(item.pixel[1])],
+      });
+    }
+    return normalized;
+  }
+
+  function buildDefaultCompletedStages() {
+    return {
+      intrinsic: false,
+      "ground-plane": false,
+      "z-mapping": false,
+      "cad-3d-dwg": false,
+      extrinsic: false,
+      sfm: false,
+      overlay: false,
+    };
+  }
+
+  function buildProjectDraftCamera(index = 1) {
+    return {
+      id: `cam-${index}`,
+      name: `Camera ${index}`,
+      location: "",
+      cameraType: "cctv",
+      sourceMode: "rtsp",
+      sourceUrl: "",
+      intrinsicsPath: "",
+      checkerboard: "9x6",
+      squareSize: 0.024,
+      minSamples: 18,
+    };
+  }
+
+  function resolveProjectDwgPath(camera = null, workspace = null, sharedPathOverride = "") {
+    return String(
+      sharedPathOverride ||
+        projectSharedDwgPath ||
+        workspace?.dwgPath ||
+        camera?.dwgPath ||
+        dwgPath ||
+        ""
+    );
+  }
+
+  function resolveProjectDwgFileName(camera = null, workspace = null, sharedFileOverride = "", sharedPathOverride = "") {
+    const resolvedPath = resolveProjectDwgPath(camera, workspace, sharedPathOverride);
+    return String(
+      sharedFileOverride ||
+        projectSharedDwgFileName ||
+        workspace?.dwgFileName ||
+        camera?.dwgFileName ||
+        (resolvedPath ? resolvedPath.split("/").pop() : "") ||
+        ""
+    );
+  }
+
+  function buildWorkspaceForCamera(camera, workspace = {}, sharedPathOverride = "", sharedFileOverride = "") {
+    return {
+      cameraType: workspace.cameraType || camera?.cameraType || "cctv",
+      sourceMode: workspace.sourceMode || camera?.sourceMode || "rtsp",
+      sourceUrl: workspace.sourceUrl || camera?.sourceUrl || "",
+      checkerboard: workspace.checkerboard || camera?.checkerboard || "9x6",
+      squareSize: Number(workspace.squareSize ?? camera?.squareSize ?? 0.024),
+      minSamples: Number(workspace.minSamples ?? camera?.minSamples ?? 18),
+      dwgPath: resolveProjectDwgPath(camera, workspace, sharedPathOverride),
+      dwgFileName: resolveProjectDwgFileName(camera, workspace, sharedFileOverride, sharedPathOverride),
+      intrinsicsPath: workspace.intrinsicsPath || camera?.intrinsicsPath || "",
+      correspondences: normalizeCorrespondenceList(workspace.correspondences),
+      zMappings: Array.isArray(workspace.zMappings) ? workspace.zMappings : [],
+      validationPairs: Array.isArray(workspace.validationPairs) ? workspace.validationPairs : [],
+      snapshotDataUrl: workspace.snapshotDataUrl || "",
+      snapshotPath: workspace.snapshotPath || "",
+      segments: Array.isArray(workspace.segments) ? workspace.segments : [],
+      stageResolvedOutputs:
+        workspace.stageResolvedOutputs && typeof workspace.stageResolvedOutputs === "object" ? workspace.stageResolvedOutputs : {},
+      completedStages:
+        workspace.completedStages && typeof workspace.completedStages === "object"
+          ? { ...buildDefaultCompletedStages(), ...workspace.completedStages }
+          : buildDefaultCompletedStages(),
+      stageOutputs:
+        workspace.stageOutputs && typeof workspace.stageOutputs === "object" ? workspace.stageOutputs : deepClone(stageOutputs),
+      latestCalibrationYamlPath: workspace.latestCalibrationYamlPath || "",
+    };
+  }
+
+  function buildProjectConfigFromState() {
+    const activeWorkspace = activeProjectCameraId ? { [activeProjectCameraId]: buildCurrentWorkspacePayload() } : {};
+    const mergedWorkspaces = { ...cameraWorkspaces, ...activeWorkspace };
+    const sharedPath = projectSharedDwgPath || dwgPath || "";
+    const sharedFile = projectSharedDwgFileName || dwgFileName || (sharedPath ? sharedPath.split("/").pop() : "") || "";
+
+    const cameras = projectCameras.map((camera) => {
+      const location = String(camera.location || camera.area || "");
+      return {
+        id: String(camera.id || ""),
+        name: String(camera.name || camera.id || "Camera"),
+        location,
+        area: location,
+        cameraType: String(camera.cameraType || "cctv"),
+        sourceMode: String(camera.sourceMode || "rtsp"),
+        sourceUrl: String(camera.sourceUrl || ""),
+        dwgPath: sharedPath,
+        dwgFileName: sharedFile,
+        intrinsicsPath: String(camera.intrinsicsPath || ""),
+        checkerboard: String(camera.checkerboard || "9x6"),
+        squareSize: Number(camera.squareSize ?? 0.024),
+        minSamples: Number(camera.minSamples ?? 18),
+      };
+    });
+
+    const nextWorkspaces = {};
+    for (const camera of cameras) {
+      nextWorkspaces[camera.id] = buildWorkspaceForCamera(camera, mergedWorkspaces[camera.id] || {}, sharedPath, sharedFile);
+    }
+
+    return {
+      schemaVersion: 2,
+      projectId: loadedProjectId || undefined,
+      projectName: String(projectName || "multi-camera-project"),
+      projectDescription: String(projectDescription || ""),
+      sharedDwgPath: sharedPath,
+      sharedDwgFileName: sharedFile,
+      cameras,
+      sharedMarkers: deepClone(Array.isArray(sharedMarkers) ? sharedMarkers : []),
+      cameraWorkspaces: nextWorkspaces,
+      activeProjectCameraId: activeProjectCameraId || cameras[0]?.id || "",
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function hydrateProjectState(config, outputPath = "", statusVerb = "Loaded") {
+    const cameras = Array.isArray(config?.cameras) ? config.cameras : [];
+    const markers = Array.isArray(config?.sharedMarkers) ? config.sharedMarkers : [];
+    const sharedPath = String(config?.sharedDwgPath || config?.dwgPath || cameras.find((camera) => camera?.dwgPath)?.dwgPath || "");
+    const sharedFile = String(
+      config?.sharedDwgFileName ||
+        config?.dwgFileName ||
+        cameras.find((camera) => camera?.dwgFileName)?.dwgFileName ||
+        (sharedPath ? sharedPath.split("/").pop() : "") ||
+        ""
+    );
+
+    const workspaceInput =
+      config?.cameraWorkspaces && typeof config.cameraWorkspaces === "object"
+        ? config.cameraWorkspaces
+        : config?.workspaces && typeof config.workspaces === "object"
+          ? config.workspaces
+          : {};
+
+    const nextWorkspaces = {};
+    for (const camera of cameras) {
+      nextWorkspaces[camera.id] = buildWorkspaceForCamera(camera, workspaceInput[camera.id] || {}, sharedPath, sharedFile);
+    }
+
+    setLoadedProjectId(String(config?.projectId || routeProjectId || ""));
+    setProjectName(config?.projectName || "multi-camera-project");
+    setProjectDescription(config?.projectDescription || "");
+    setProjectSharedDwgPath(sharedPath);
+    setProjectSharedDwgFileName(sharedFile);
+    setProjectConfigPath(outputPath || "");
+    setProjectOpenPath(outputPath || "");
+    setProjectCameras(cameras.map((camera) => ({ ...camera, dwgPath: sharedPath, dwgFileName: sharedFile })));
+    setSharedMarkers(markers);
+    setCameraWorkspaces(nextWorkspaces);
+    setTriangulationResult(null);
+    setTriangulationStatus("No multi-camera triangulation run yet.");
+
+    setProjectDraftName(config?.projectName || "multi-camera-project");
+    setProjectDraftDescription(config?.projectDescription || "");
+    setProjectDraftSharedDwgPath(sharedPath || "");
+    setProjectDraftCameras(
+      cameras.length
+        ? cameras.map((camera, index) => ({
+            id: camera.id || `cam-${index + 1}`,
+            name: camera.name || `Camera ${index + 1}`,
+            location: camera.location || camera.area || "",
+            cameraType: camera.cameraType || "cctv",
+            sourceMode: camera.sourceMode || "rtsp",
+            sourceUrl: camera.sourceUrl || "",
+            intrinsicsPath: camera.intrinsicsPath || "",
+            checkerboard: camera.checkerboard || "9x6",
+            squareSize: Number(camera.squareSize ?? 0.024),
+            minSamples: Number(camera.minSamples ?? 18),
+          }))
+        : [buildProjectDraftCamera(1)]
+    );
+
+    const preferredCameraId =
+      String(config?.activeProjectCameraId || config?.lastActiveCameraId || "") || cameras[0]?.id || "";
+    if (preferredCameraId) {
+      const selectedCamera = cameras.find((camera) => camera.id === preferredCameraId) || cameras[0];
+      setActiveProjectCameraId(selectedCamera.id);
+      applyCameraWorkspace(selectedCamera, nextWorkspaces[selectedCamera.id] || {}, sharedPath, sharedFile);
+    }
+
+    setProjectStatus(`${statusVerb} project '${config?.projectName || "multi-camera-project"}' with ${cameras.length} cameras.`);
+  }
+
+  function withCameraSuffix(basePath, cameraId, stage) {
+    const fallback = `uploads/stages/${stage}.json`;
+    const raw = String(basePath || fallback).trim();
+    if (!raw) {
+      return `${fallback.replace(/\.json$/, "")}-${cameraId}.json`;
+    }
+    if (raw.includes("{cameraId}")) {
+      return raw.replaceAll("{cameraId}", cameraId);
+    }
+    const extMatch = raw.match(/^(.*?)(\.[^./\\]+)$/);
+    if (extMatch) {
+      return `${extMatch[1]}-${cameraId}${extMatch[2]}`;
+    }
+    return `${raw}-${cameraId}`;
+  }
+
+  function appendProjectSequenceLog(message) {
+    setProjectSequenceLogs((prev) => {
+      const next = [...prev, message];
+      return next.length > 240 ? next.slice(next.length - 240) : next;
+    });
+  }
+
+  function getProjectCameraById(cameraId, fromList = projectCameras) {
+    return fromList.find((camera) => camera.id === cameraId) || null;
+  }
+
+  function buildCurrentWorkspacePayload() {
+    const resolvedDwgPath = projectSharedDwgPath || dwgPath || "";
+    const resolvedDwgFileName =
+      projectSharedDwgFileName ||
+      dwgFileName ||
+      (resolvedDwgPath ? resolvedDwgPath.split("/").pop() : "") ||
+      "";
+
+    return {
+      cameraType,
+      sourceMode,
+      sourceUrl,
+      checkerboard,
+      squareSize,
+      minSamples,
+      dwgPath: resolvedDwgPath,
+      dwgFileName: resolvedDwgFileName,
+      segments: deepClone(Array.isArray(segments) ? segments : []),
+      snapshotDataUrl: snapshotDataUrl || "",
+      snapshotPath: snapshotPath || "",
+      correspondences: deepClone(normalizeCorrespondenceList(correspondences)),
+      zMappings: deepClone(Array.isArray(zMappings) ? zMappings : []),
+      validationPairs: deepClone(Array.isArray(validationPairs) ? validationPairs : []),
+      intrinsicsPath: intrinsicsPath || "",
+      latestCalibrationYamlPath: latestCalibrationYamlPath || "",
+      stageOutputs: deepClone(stageOutputs),
+      stageResolvedOutputs: deepClone(stageResolvedOutputs),
+      completedStages: deepClone(completedStages),
+    };
+  }
+
+  function applyCameraWorkspace(camera, workspace = {}, sharedPathOverride = "", sharedFileOverride = "") {
+    const defaultCompletedStages = buildDefaultCompletedStages();
+
+    const loadedPairs = normalizeCorrespondenceList(workspace.correspondences);
+    const loadedZmappings = Array.isArray(workspace.zMappings) ? workspace.zMappings : [];
+    const loadedValidation = Array.isArray(workspace.validationPairs) ? workspace.validationPairs : [];
+
+    setCameraType(workspace.cameraType || camera?.cameraType || "cctv");
+    setSourceMode(workspace.sourceMode || camera?.sourceMode || "rtsp");
+    setSourceUrl(workspace.sourceUrl || camera?.sourceUrl || "");
+    setCheckerboard(workspace.checkerboard || camera?.checkerboard || "9x6");
+    setSquareSize(Number(workspace.squareSize ?? camera?.squareSize ?? 0.024));
+    setMinSamples(Number(workspace.minSamples ?? camera?.minSamples ?? 18));
+
+    const loadedDwgPath = resolveProjectDwgPath(camera, workspace, sharedPathOverride);
+    const loadedDwgFile = resolveProjectDwgFileName(camera, workspace, sharedFileOverride, sharedPathOverride);
+    setDwgPath(loadedDwgPath);
+    setDwgFileName(loadedDwgFile);
+    setDwgMessage(loadedDwgPath ? `Shared CAD loaded: ${loadedDwgFile || loadedDwgPath}` : "No DWG/DXF uploaded yet.");
+
+    const workspaceSegments = Array.isArray(workspace.segments) ? workspace.segments : [];
+    setSegments((prevSegments) => {
+      if (workspaceSegments.length) {
+        return workspaceSegments;
+      }
+      if (loadedDwgPath && loadedDwgPath === dwgPath && Array.isArray(prevSegments) && prevSegments.length) {
+        return prevSegments;
+      }
+      return [];
+    });
+    setSnapshotDataUrl(workspace.snapshotDataUrl || "");
+    setSnapshotPath(workspace.snapshotPath || "");
+    setCorrespondences(loadedPairs);
+    setCorrespondenceText(JSON.stringify(loadedPairs, null, 2));
+    setZMappings(loadedZmappings);
+    setValidationPairs(loadedValidation);
+    setIntrinsicsPath(workspace.intrinsicsPath || camera?.intrinsicsPath || "");
+    setLatestCalibrationYamlPath(workspace.latestCalibrationYamlPath || "");
+    setStageOutputs(workspace.stageOutputs || stageOutputs);
+    setStageResolvedOutputs(workspace.stageResolvedOutputs || {});
+    setCompletedStages({ ...defaultCompletedStages, ...(workspace.completedStages || {}) });
+  }
+
+  async function loadCadPreviewByPath(targetPath) {
+    const normalizedPath = String(targetPath || "").trim();
+    if (!normalizedPath) {
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/uploads/dwg/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: normalizedPath }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to load CAD preview");
+      }
+
+      const previewSegments = Array.isArray(data?.preview?.segments) ? data.preview.segments : [];
+      setSegments(previewSegments);
+      const loadedName = data?.fileName || normalizedPath.split("/").pop() || normalizedPath;
+      setDwgMessage(data?.note || `Shared CAD loaded: ${loadedName}`);
+    } catch (err) {
+      setDwgMessage(err instanceof Error ? err.message : "Failed to load CAD preview");
+    }
+  }
+
+  function openProjectCamera(cameraId, fromList = projectCameras, fromWorkspaces = cameraWorkspaces) {
+    const targetCamera = getProjectCameraById(cameraId, fromList);
+    if (!targetCamera) {
+      setProjectStatus(`Camera '${cameraId}' not found in project.`);
+      return;
+    }
+
+    let nextWorkspaces = fromWorkspaces;
+    if (activeProjectCameraId && activeProjectCameraId !== cameraId) {
+      nextWorkspaces = {
+        ...fromWorkspaces,
+        [activeProjectCameraId]: buildCurrentWorkspacePayload(),
+      };
+      setCameraWorkspaces(nextWorkspaces);
+    }
+
+    const savedWorkspace = nextWorkspaces[cameraId] || {};
+    setActiveProjectCameraId(cameraId);
+    applyCameraWorkspace(targetCamera, savedWorkspace, projectSharedDwgPath, projectSharedDwgFileName);
+    setProjectStatus(`Opened camera '${targetCamera.name}' (${targetCamera.id}).`);
+  }
+
+  function syncCurrentPairsToSharedMarkers() {
+    if (!activeProjectCameraId) {
+      setProjectStatus("Open/select a project camera first.");
+      return;
+    }
+
+    const pairs = normalizeCorrespondenceList(correspondences);
+    if (!pairs.length) {
+      setProjectStatus("No ground-plane pairs to sync into shared markers.");
+      return;
+    }
+
+    setSharedMarkers((prev) => {
+      const map = new Map(
+        (Array.isArray(prev) ? prev : []).map((item) => [
+          String(item.id),
+          {
+            ...item,
+            observations: { ...(item.observations || {}) },
+          },
+        ])
+      );
+
+      for (let i = 0; i < pairs.length; i += 1) {
+        const pair = pairs[i];
+        const markerId = String(pair.markerId || `m${i + 1}`);
+        const existing = map.get(markerId) || {
+          id: markerId,
+          world: [Number(pair.world[0]), Number(pair.world[1]), Number(pair.world[2])],
+          observations: {},
+        };
+
+        if (!existing.world && Array.isArray(pair.world) && pair.world.length === 3) {
+          existing.world = [Number(pair.world[0]), Number(pair.world[1]), Number(pair.world[2])];
+        }
+
+        existing.observations = {
+          ...(existing.observations || {}),
+          [activeProjectCameraId]: [Number(pair.pixel[0]), Number(pair.pixel[1])],
+        };
+
+        map.set(markerId, existing);
+      }
+
+      return Array.from(map.values());
+    });
+
+    setProjectStatus(`Synced ${pairs.length} marker pairs from camera '${activeProjectCameraId}' into shared markers.`);
+  }
+
+  function beginSharedMarkerCapture() {
+    if (!activeProjectCameraId) {
+      setSolveStatus("Select/open a project camera first.");
+      return;
+    }
+
+    if (!sharedMarkers.length) {
+      setSolveStatus("No shared markers available. Sync marker points from at least one camera first.");
+      return;
+    }
+
+    const idx = sharedMarkers.findIndex((marker) => {
+      const hasWorld = Array.isArray(marker.world) && marker.world.length === 3;
+      const hasCurrentObs = marker?.observations?.[activeProjectCameraId];
+      return hasWorld && !hasCurrentObs;
+    });
+
+    if (idx < 0) {
+      setSolveStatus("All shared markers already have image observations for this camera.");
+      return;
+    }
+
+    setImagePickMode("shared-marker");
+    setPendingSharedMarkerIndex(idx);
+    setPendingImagePoint(null);
+    const marker = sharedMarkers[idx];
+    setSolveStatus(`Shared marker mode active. Click image point for marker '${marker.id}'.`);
+  }
+
+  function stopSharedMarkerCapture() {
+    setImagePickMode("ground");
+    setPendingSharedMarkerIndex(null);
+    setPendingImagePoint(null);
+    setSolveStatus("Shared marker capture stopped.");
+  }
+
+  function addProjectDraftCamera() {
+    setProjectDraftCameras((prev) => [...prev, buildProjectDraftCamera(prev.length + 1)]);
+  }
+
+  function updateProjectDraftCamera(index, field, value) {
+    setProjectDraftCameras((prev) =>
+      prev.map((camera, idx) => {
+        if (idx !== index) {
+          return camera;
+        }
+
+        if (field === "squareSize" || field === "minSamples") {
+          const numeric = Number(value);
+          return { ...camera, [field]: Number.isFinite(numeric) ? numeric : camera[field] };
+        }
+
+        return { ...camera, [field]: value };
+      })
+    );
+  }
+
+  function removeProjectDraftCamera(index) {
+    setProjectDraftCameras((prev) => {
+      if (prev.length <= 1) {
+        return prev;
+      }
+      return prev.filter((_, idx) => idx !== index);
+    });
+  }
+
+  function useCurrentDwgForDraft() {
+    const current = String(projectSharedDwgPath || dwgPath || "").trim();
+    if (!current) {
+      setProjectStatus("Upload DWG/DXF first, then use it as shared project DWG.");
+      return;
+    }
+    setProjectDraftSharedDwgPath(current);
+  }
+
+  async function createProjectFromDraft() {
+    try {
+      const name = String(projectDraftName || "").trim();
+      if (!name) {
+        throw new Error("Project name is required.");
+      }
+
+      const sharedPath = String(projectDraftSharedDwgPath || projectSharedDwgPath || dwgPath || "").trim();
+      if (!sharedPath) {
+        throw new Error("Shared project DWG path is required.");
+      }
+
+      const sharedFileName = sharedPath.split("/").pop() || "";
+      const cameras = projectDraftCameras
+        .map((camera, index) => {
+          const location = String(camera.location || camera.area || "").trim();
+          return {
+            id: String(camera.id || "").trim() || `cam-${index + 1}`,
+            name: String(camera.name || "").trim() || `Camera ${index + 1}`,
+            location,
+            area: location,
+            cameraType: String(camera.cameraType || "cctv"),
+            sourceMode: String(camera.sourceMode || "rtsp"),
+            sourceUrl: String(camera.sourceUrl || "").trim(),
+            intrinsicsPath: String(camera.intrinsicsPath || "").trim(),
+            checkerboard: String(camera.checkerboard || "9x6"),
+            squareSize: Number(camera.squareSize ?? 0.024),
+            minSamples: Number(camera.minSamples ?? 18),
+          };
+        })
+        .filter((camera) => camera.id && camera.name);
+
+      if (!cameras.length) {
+        throw new Error("Add at least one valid camera in project builder.");
+      }
+
+      const projectConfig = {
+        schemaVersion: 2,
+        projectName: name,
+        projectDescription: String(projectDraftDescription || "").trim(),
+        sharedDwgPath: sharedPath,
+        sharedDwgFileName: sharedFileName,
+        cameras,
+        sharedMarkers: [],
+        cameraWorkspaces: {},
+      };
+
+      const res = await fetch("/api/calibration/web/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectConfig }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Project creation failed");
+      }
+
+      hydrateProjectState(data?.projectConfig, data?.outputPath || "", "Created");
+    } catch (err) {
+      setProjectStatus(err instanceof Error ? err.message : "Project creation failed");
+    }
+  }
+
+  async function saveCurrentProjectConfig() {
+    try {
+      if (!projectCameras.length) {
+        throw new Error("Create or open a project first.");
+      }
+
+      const projectConfig = buildProjectConfigFromState();
+      const targetProjectId = String(routeProjectId || loadedProjectId || projectConfig.projectId || "").trim();
+
+      const endpoint = targetProjectId
+        ? `/api/calibration/web/projects/${encodeURIComponent(targetProjectId)}`
+        : "/api/calibration/web/project-config";
+      const payload = targetProjectId
+        ? { projectConfig }
+        : {
+            projectConfig,
+            outputPath: projectConfigPath || undefined,
+          };
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to save project config");
+      }
+
+      if (data?.projectId) {
+        setLoadedProjectId(String(data.projectId));
+      }
+      hydrateProjectState(data?.projectConfig, data?.outputPath || projectConfigPath || "", "Saved");
+    } catch (err) {
+      setProjectStatus(err instanceof Error ? err.message : "Failed to save project config");
+    }
+  }
+
+  async function uploadProjectConfig(file) {
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch("/api/calibration/web/project-config", {
+        method: "POST",
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Project config upload failed");
+      }
+      hydrateProjectState(data?.projectConfig, data?.outputPath || "", "Loaded");
+    } catch (err) {
+      setProjectStatus(err instanceof Error ? err.message : "Project config upload failed");
+    }
+  }
+
+  async function openProjectByPath() {
+    try {
+      if (!projectOpenPath.trim()) {
+        throw new Error("Enter a project config path first.");
+      }
+
+      const res = await fetch(`/api/calibration/web/project-config?path=${encodeURIComponent(projectOpenPath.trim())}`);
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to open project config");
+      }
+      hydrateProjectState(data?.projectConfig, data?.outputPath || projectOpenPath.trim(), "Opened");
+    } catch (err) {
+      setProjectStatus(err instanceof Error ? err.message : "Failed to open project config");
+    }
+  }
+
+  function getProjectCameraStageReadiness(stage, camera, workspace, completedMap) {
+    const idx = PROJECT_CALIBRATION_STAGES.indexOf(stage);
+    if (idx > 0) {
+      const prevStage = PROJECT_CALIBRATION_STAGES[idx - 1];
+      if (!completedMap[prevStage]) {
+        return { enabled: false, status: `Complete previous stage first (${prevStage}).` };
+      }
+    }
+
+    const sourceModeValue = workspace.sourceMode || camera.sourceMode || "rtsp";
+    const sourceUrlValue = workspace.sourceUrl || camera.sourceUrl || "";
+    const dwgPathValue = resolveProjectDwgPath(camera, workspace);
+    const corr = normalizeCorrespondenceList(workspace.correspondences);
+    const zMap = Array.isArray(workspace.zMappings) ? workspace.zMappings : [];
+    const snapshot = workspace.snapshotDataUrl || workspace.snapshotPath || "";
+
+    if (stage === "intrinsic") {
+      if (sourceModeValue !== "webcam" && !sourceUrlValue) {
+        return { enabled: false, status: "Set source URL for this camera." };
+      }
+      return { enabled: true, status: "Ready" };
+    }
+
+    if (stage === "ground-plane") {
+      if (!dwgPathValue) {
+        return { enabled: false, status: "DWG path missing." };
+      }
+      if (!snapshot) {
+        return { enabled: false, status: "Snapshot missing." };
+      }
+      if (corr.length < 4) {
+        return { enabled: false, status: `Need at least 4 pairs (have ${corr.length}).` };
+      }
+      return { enabled: true, status: "Ready" };
+    }
+
+    if (stage === "z-mapping") {
+      if (!snapshot) {
+        return { enabled: false, status: "Snapshot missing." };
+      }
+      if (zMap.length < 1) {
+        return { enabled: false, status: "Need at least 1 z-mapping point." };
+      }
+      return { enabled: true, status: "Ready" };
+    }
+
+    if (stage === "cad-3d-dwg") {
+      if (!dwgPathValue) {
+        return { enabled: false, status: "DWG path missing." };
+      }
+      return { enabled: true, status: "Ready" };
+    }
+
+    return { enabled: true, status: "Ready" };
+  }
+
+  async function solvePnpForWorkspace(camera, workspace) {
+    const pairs = normalizeCorrespondenceList(workspace.correspondences);
+    if (pairs.length < 4) {
+      throw new Error(`[${camera.id}] Need at least 4 correspondences for solvePnP.`);
+    }
+
+    const res = await fetch("/api/calibration/web/solve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        correspondences: pairs,
+        intrinsicsPath: workspace.intrinsicsPath || camera.intrinsicsPath || "",
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `[${camera.id}] Solve PnP failed`);
+    }
+
+    return data.outputYaml || "";
+  }
+
+  async function startProjectStage(stage, camera, workspace) {
+    const resolvedDwgPath = resolveProjectDwgPath(camera, workspace);
+    const resolvedDwgFileName = resolveProjectDwgFileName(camera, workspace);
+
+    const cfg = {
+      cameraType: workspace.cameraType || camera.cameraType || "cctv",
+      sourceMode: workspace.sourceMode || camera.sourceMode || "rtsp",
+      sourceUrl: (workspace.sourceMode || camera.sourceMode || "rtsp") === "webcam"
+        ? "__webcam__"
+        : (workspace.sourceUrl || camera.sourceUrl || sourceUrl),
+      dwgFileName: resolvedDwgFileName,
+      dwgPath: resolvedDwgPath,
+      checkerboard: workspace.checkerboard || camera.checkerboard || checkerboard,
+      squareSize: Number(workspace.squareSize ?? camera.squareSize ?? squareSize),
+      minSamples: Number(workspace.minSamples ?? camera.minSamples ?? minSamples),
+      stageOutputPath: withCameraSuffix(workspace?.stageOutputs?.[stage] || stageOutputs[stage] || "", camera.id, stage),
+      webMode: true,
+      options: {
+        useGroundPlane,
+        useZDirection,
+        useSfm,
+        useRealtimeOverlay: useOverlay,
+      },
+    };
+
+    const res = await fetch("/api/calibration/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage, config: cfg }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error || `[${camera.id}] failed to start stage '${stage}'`);
+    }
+    return { jobId: data?.job?.id, config: cfg };
+  }
+
+  function buildTriangulationPayload(workspacesArg = cameraWorkspaces) {
+    const camerasPayload = [];
+    for (const camera of projectCameras) {
+      const workspace = workspacesArg[camera.id] || {};
+      const calibrationYamlPath = workspace.latestCalibrationYamlPath || camera.calibrationYamlPath || "";
+      if (!calibrationYamlPath) {
+        continue;
+      }
+      camerasPayload.push({
+        cameraId: camera.id,
+        calibrationYamlPath,
+        intrinsicsPath: workspace.intrinsicsPath || camera.intrinsicsPath || "",
+        snapshotPath: workspace.snapshotPath || camera.snapshotPath || "",
+      });
+    }
+
+    const markerMap = new Map();
+
+    for (const marker of sharedMarkers) {
+      const markerId = String(marker.id || marker.markerId || "").trim();
+      if (!markerId) {
+        continue;
+      }
+      markerMap.set(markerId, {
+        markerId,
+        world: Array.isArray(marker.world) && marker.world.length === 3
+          ? [Number(marker.world[0]), Number(marker.world[1]), Number(marker.world[2])]
+          : undefined,
+        observations: { ...(marker.observations || {}) },
+      });
+    }
+
+    for (const camera of projectCameras) {
+      const workspace = workspacesArg[camera.id] || {};
+      const pairs = normalizeCorrespondenceList(workspace.correspondences);
+      for (let i = 0; i < pairs.length; i += 1) {
+        const pair = pairs[i];
+        const markerId = String(pair.markerId || `m${i + 1}`);
+        const existing = markerMap.get(markerId) || {
+          markerId,
+          world: [Number(pair.world[0]), Number(pair.world[1]), Number(pair.world[2])],
+          observations: {},
+        };
+
+        if (!existing.world) {
+          existing.world = [Number(pair.world[0]), Number(pair.world[1]), Number(pair.world[2])];
+        }
+
+        existing.observations = {
+          ...(existing.observations || {}),
+          [camera.id]: [Number(pair.pixel[0]), Number(pair.pixel[1])],
+        };
+
+        markerMap.set(markerId, existing);
+      }
+    }
+
+    const markersPayload = Array.from(markerMap.values()).map((item) => {
+      const observations = Object.entries(item.observations || {}).map(([cameraId, pixel]) => ({
+        cameraId,
+        pixel,
+      }));
+      return {
+        markerId: item.markerId,
+        world: item.world,
+        observations,
+      };
+    });
+
+    return { camerasPayload, markersPayload };
+  }
+
+  async function runProjectTriangulation(workspacesArg = cameraWorkspaces) {
+    try {
+      const { camerasPayload, markersPayload } = buildTriangulationPayload(workspacesArg);
+      if (camerasPayload.length < 2) {
+        throw new Error("Need at least 2 cameras with solved calibration YAML paths.");
+      }
+
+      const autoMatch = markersPayload.length === 0;
+      if (autoMatch) {
+        const camerasWithSnapshots = camerasPayload.filter((item) => item.snapshotPath);
+        if (camerasWithSnapshots.length < 2) {
+          throw new Error("No shared markers found and not enough camera snapshots for auto feature matching.");
+        }
+      }
+
+      const res = await fetch("/api/calibration/web/triangulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cameras: camerasPayload,
+          markers: markersPayload,
+          autoMatch,
+          matchOptions: {
+            method: "auto",
+            maxFeatures: 2048,
+            maxMatchesPerPair: 600,
+            minConfidence: 0.35,
+            maxImageSide: 1280,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Multi-camera triangulation failed");
+      }
+
+      const result = data?.triangulation || null;
+      setTriangulationResult(result);
+      const rmse = result?.metrics?.reprojection_error_px?.rmse;
+      const autoLabel = result?.auto_match?.marker_count ? `, AutoMatchMarkers=${result.auto_match.marker_count}` : "";
+      setTriangulationStatus(
+        `Triangulation OK. Points=${result?.marker_count_triangulated ?? 0}, Reprojection RMSE=${typeof rmse === "number" ? rmse.toFixed(2) : "n/a"} px${autoLabel}`
+      );
+      return { ok: true, result };
+    } catch (err) {
+      setTriangulationStatus(err instanceof Error ? err.message : "Multi-camera triangulation failed");
+      return { ok: false, error: err instanceof Error ? err.message : "Multi-camera triangulation failed" };
+    }
+  }
+
+  async function runProjectSequence() {
+    if (projectSequenceRunning) {
+      return;
+    }
+
+    if (!projectCameras.length) {
+      setProjectSequenceStatus("Load a project config with cameras first.");
+      return;
+    }
+
+    let nextWorkspaces = {
+      ...cameraWorkspaces,
+      ...(activeProjectCameraId ? { [activeProjectCameraId]: buildCurrentWorkspacePayload() } : {}),
+    };
+    setCameraWorkspaces(nextWorkspaces);
+
+    setProjectSequenceRunning(true);
+    setProjectSequenceLogs([]);
+    setProjectSequenceStatus(`Running project sequence for ${projectCameras.length} camera(s)...`);
+    appendProjectSequenceLog(`▶️ Project '${projectName || "multi-camera-project"}' started`);
+
+    try {
+      for (const camera of projectCameras) {
+        appendProjectSequenceLog(`📷 Camera ${camera.name} (${camera.id})`);
+
+        const cameraWorkspace = {
+          ...(nextWorkspaces[camera.id] || {}),
+          cameraType: (nextWorkspaces[camera.id]?.cameraType || camera.cameraType || "cctv"),
+          sourceMode: (nextWorkspaces[camera.id]?.sourceMode || camera.sourceMode || "rtsp"),
+          sourceUrl: (nextWorkspaces[camera.id]?.sourceUrl || camera.sourceUrl || ""),
+          checkerboard: (nextWorkspaces[camera.id]?.checkerboard || camera.checkerboard || "9x6"),
+          squareSize: Number(nextWorkspaces[camera.id]?.squareSize ?? camera.squareSize ?? 0.024),
+          minSamples: Number(nextWorkspaces[camera.id]?.minSamples ?? camera.minSamples ?? 18),
+          dwgPath: resolveProjectDwgPath(camera, nextWorkspaces[camera.id] || {}),
+          dwgFileName: resolveProjectDwgFileName(camera, nextWorkspaces[camera.id] || {}),
+          intrinsicsPath: nextWorkspaces[camera.id]?.intrinsicsPath || camera.intrinsicsPath || "",
+          correspondences: normalizeCorrespondenceList(nextWorkspaces[camera.id]?.correspondences || []),
+          zMappings: Array.isArray(nextWorkspaces[camera.id]?.zMappings) ? nextWorkspaces[camera.id].zMappings : [],
+          snapshotDataUrl: nextWorkspaces[camera.id]?.snapshotDataUrl || "",
+          snapshotPath: nextWorkspaces[camera.id]?.snapshotPath || "",
+          stageOutputs: nextWorkspaces[camera.id]?.stageOutputs || stageOutputs,
+        };
+
+        setActiveProjectCameraId(camera.id);
+        applyCameraWorkspace(camera, cameraWorkspace, projectSharedDwgPath, projectSharedDwgFileName);
+
+        const pnpYamlPath = await solvePnpForWorkspace(camera, cameraWorkspace);
+        appendProjectSequenceLog(`  ✅ solve-pnp -> ${pnpYamlPath}`);
+
+        const completedMap = PROJECT_CALIBRATION_STAGES.reduce((acc, stage) => ({ ...acc, [stage]: false }), {});
+
+        if (projectRunStageChain) {
+          for (const stage of PROJECT_CALIBRATION_STAGES) {
+            const readiness = getProjectCameraStageReadiness(stage, camera, cameraWorkspace, completedMap);
+            if (!readiness.enabled) {
+              throw new Error(`[${camera.id}] ${stage} blocked: ${readiness.status}`);
+            }
+
+            appendProjectSequenceLog(`  🚀 ${stage}`);
+            const started = await startProjectStage(stage, camera, cameraWorkspace);
+            if (!started?.jobId) {
+              throw new Error(`[${camera.id}] ${stage} failed to start`);
+            }
+
+            const done = await waitForStageCompletion(stage, started.jobId, 20 * 60 * 1000);
+            if (!done.ok) {
+              throw new Error(`[${camera.id}] ${stage} failed: ${done.error || "unknown error"}`);
+            }
+
+            completedMap[stage] = true;
+            appendProjectSequenceLog(`  ✅ ${stage}`);
+          }
+        }
+
+        nextWorkspaces = {
+          ...nextWorkspaces,
+          [camera.id]: {
+            ...cameraWorkspace,
+            latestCalibrationYamlPath: pnpYamlPath,
+            completedStages: completedMap,
+          },
+        };
+        setCameraWorkspaces(nextWorkspaces);
+      }
+
+      if (projectAutoTriangulate) {
+        appendProjectSequenceLog("📐 Running multi-camera triangulation...");
+        const tri = await runProjectTriangulation(nextWorkspaces);
+        if (!tri.ok) {
+          throw new Error(tri.error || "Triangulation failed");
+        }
+        appendProjectSequenceLog("✅ Multi-camera triangulation complete");
+      }
+
+      setProjectSequenceStatus("Project sequence completed successfully.");
+      appendProjectSequenceLog("🎉 Project sequence completed");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Project sequence failed";
+      setProjectSequenceStatus(msg);
+      appendProjectSequenceLog(`❌ ${msg}`);
+    } finally {
+      setProjectSequenceRunning(false);
+    }
+  }
 
   useEffect(() => {
     if (!currentJobId) return;
@@ -492,6 +1185,19 @@ export default function Home() {
         const outPath = data.job?.result?.outputPath || data.job?.result?.calibrationFile || data.job?.result?.outputDir;
         if (outPath) {
           setStageResolvedOutputs((prev) => ({ ...prev, [stageName]: outPath }));
+        }
+
+        if (stageName === "intrinsic") {
+          const intrinsicOutputPath = data.job?.result?.intrinsicsPath;
+          const intrinsicResult = data.job?.result?.intrinsic;
+          if (intrinsicOutputPath) {
+            setIntrinsicsPath(intrinsicOutputPath);
+          }
+          if (intrinsicResult && typeof intrinsicResult === "object") {
+            setIntrinsicSolveResult((prev) => ({ ...(prev || {}), ...intrinsicResult }));
+            const rms = intrinsicResult?.rms;
+            setIntrinsicStatus(`Intrinsic solved. RMS=${typeof rms === "number" ? rms.toFixed(4) : "n/a"}`);
+          }
         }
       }
       if (data.job.status === "completed" || data.job.status === "failed") {
@@ -524,6 +1230,57 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!activeProjectCameraId) {
+      return;
+    }
+
+    const payload = buildCurrentWorkspacePayload();
+    setCameraWorkspaces((prev) => ({
+      ...prev,
+      [activeProjectCameraId]: payload,
+    }));
+  }, [
+    activeProjectCameraId,
+    cameraType,
+    sourceMode,
+    sourceUrl,
+    checkerboard,
+    squareSize,
+    minSamples,
+    dwgPath,
+    dwgFileName,
+    segments,
+    snapshotDataUrl,
+    snapshotPath,
+    correspondences,
+    zMappings,
+    validationPairs,
+    intrinsicsPath,
+    latestCalibrationYamlPath,
+    stageOutputs,
+    stageResolvedOutputs,
+    completedStages,
+  ]);
+
+  useEffect(() => {
+    for (const stage of STAGES) {
+      const hasResolvedPath = Boolean(stageResolvedOutputs[stage]);
+      if (!hasResolvedPath && !completedStages[stage]) {
+        continue;
+      }
+      const outputPath = getStageOutputPath(stage);
+      if (!outputPath) {
+        continue;
+      }
+      const existing = stageOutputDetails[stage];
+      if (existing?.path === outputPath || stageOutputLoading[stage]) {
+        continue;
+      }
+      inspectStageOutput(stage, outputPath);
+    }
+  }, [stageOutputs, stageResolvedOutputs, completedStages, stageOutputDetails, stageOutputLoading]);
+
   async function startStage(stage) {
     const needsDwg = stage !== "intrinsic";
     if (needsDwg && !dwgPath) {
@@ -549,6 +1306,7 @@ export default function Home() {
             checkerboard,
             squareSize,
             minSamples,
+            intrinsicSessionId,
             stageOutputPath: stageOutputs[stage] || "",
             webMode: true,
             options: {
@@ -860,6 +1618,33 @@ export default function Home() {
     setDwgPath(data.path);
     setDwgMessage(data.note);
     setSegments(data.preview?.segments ?? []);
+
+    const nextSharedPath = String(data.path || "");
+    const nextSharedFile = String(data.fileName || (nextSharedPath ? nextSharedPath.split("/").pop() : "") || "");
+    setProjectDraftSharedDwgPath(nextSharedPath);
+
+    if (projectCameras.length) {
+      setProjectSharedDwgPath(nextSharedPath);
+      setProjectSharedDwgFileName(nextSharedFile);
+
+      setProjectCameras((prev) =>
+        prev.map((camera) => ({
+          ...camera,
+          dwgPath: nextSharedPath,
+          dwgFileName: nextSharedFile,
+        }))
+      );
+
+      setCameraWorkspaces((prev) => {
+        const next = { ...prev };
+        for (const camera of projectCameras) {
+          next[camera.id] = buildWorkspaceForCamera(camera, prev[camera.id] || {}, nextSharedPath, nextSharedFile);
+        }
+        return next;
+      });
+
+      setProjectStatus(`Shared DWG updated for project: ${nextSharedFile || nextSharedPath}`);
+    }
   }
 
   async function loadSampleArrangement() {
@@ -876,6 +1661,7 @@ export default function Home() {
       setSourceUrl(sample.sourceUrl);
       setDwgPath(sample.dwgPath);
       setDwgFileName(sample.dwgPath?.split("/").pop());
+      setProjectDraftSharedDwgPath(sample.dwgPath || "");
       setSegments(sample.preview?.segments ?? []);
       setCheckerboard(sample.intrinsicDefaults?.checkerboard ?? "9x6");
       setSquareSize(sample.intrinsicDefaults?.squareSize ?? 0.024);
@@ -942,6 +1728,108 @@ export default function Home() {
 
   function setStageOutput(stage, outputPath) {
     setStageOutputs((prev) => ({ ...prev, [stage]: outputPath }));
+  }
+
+  function getStageOutputPath(stage) {
+    return String(stageResolvedOutputs[stage] || stageOutputs[stage] || "").trim();
+  }
+
+  function getOutputDownloadHref(outputPath) {
+    const value = String(outputPath || "").trim();
+    if (!value) {
+      return "";
+    }
+    return `/api/calibration/web/output/download?path=${encodeURIComponent(value)}`;
+  }
+
+  async function inspectStageOutput(stage, explicitPath = "") {
+    const outputPath = String(explicitPath || getStageOutputPath(stage)).trim();
+    if (!outputPath) {
+      return;
+    }
+
+    setStageOutputLoading((prev) => ({ ...prev, [stage]: true }));
+    try {
+      const res = await fetch("/api/calibration/web/output/inspect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: outputPath }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to inspect output");
+      }
+      setStageOutputDetails((prev) => ({
+        ...prev,
+        [stage]: {
+          ...data,
+          fetchedAt: Date.now(),
+        },
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to inspect output";
+      const isMissing = /ENOENT|no such file or directory|not found/i.test(message);
+
+      if (isMissing) {
+        setStageMessage(stage, "Output file not found (stale path removed). Run the stage again.");
+        setStageResolvedOutputs((prev) => {
+          if (String(prev?.[stage] || "").trim() !== outputPath) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[stage];
+          return next;
+        });
+        setStageOutputs((prev) => {
+          if (String(prev?.[stage] || "").trim() !== outputPath) {
+            return prev;
+          }
+          return { ...prev, [stage]: "" };
+        });
+        setStageOutputDetails((prev) => ({
+          ...prev,
+          [stage]: {
+            path: outputPath,
+            missing: true,
+            error: "Output file no longer exists.",
+          },
+        }));
+        return;
+      }
+
+      setStageOutputDetails((prev) => ({
+        ...prev,
+        [stage]: {
+          path: outputPath,
+          error: message,
+        },
+      }));
+    } finally {
+      setStageOutputLoading((prev) => ({ ...prev, [stage]: false }));
+    }
+  }
+
+  function downloadIntrinsicSummary() {
+    if (!intrinsicSolveResult) {
+      setIntrinsicStatus("Solve intrinsic first to download summary JSON.");
+      return;
+    }
+
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      intrinsicsPath,
+      result: intrinsicSolveResult,
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `intrinsics-summary-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   async function startWebcam() {
@@ -1035,6 +1923,10 @@ export default function Home() {
     }, 1500);
   }
 
+  function clearFeedError() {
+    setFeedError("");
+  }
+
   const liveFeedSrc = `/api/feeds/mjpeg?source=${encodeURIComponent(sourceUrl || "")}&fps=${feedFps}&width=${feedWidth}&nonce=${feedNonce}`;
 
   async function captureSnapshotWeb() {
@@ -1051,6 +1943,7 @@ export default function Home() {
           throw new Error(saveData?.error || "Webcam snapshot save failed");
         }
         setSnapshotDataUrl(saveData.snapshotDataUrl || imageDataUrl);
+        setSnapshotPath(saveData.outputPath || "");
         setSnapshotStatus(`Webcam snapshot captured: ${saveData.outputPath}`);
         return;
       }
@@ -1065,6 +1958,7 @@ export default function Home() {
         throw new Error(data?.error || "Snapshot capture failed");
       }
       setSnapshotDataUrl(data.snapshotDataUrl || "");
+      setSnapshotPath(data.outputPath || "");
       setSnapshotStatus(`Snapshot captured from ${sourceUrl}`);
     } catch (err) {
       setSnapshotStatus(err instanceof Error ? err.message : "Snapshot capture failed");
@@ -1089,6 +1983,9 @@ export default function Home() {
         if (data.snapshotDataUrl) {
           setSnapshotDataUrl(data.snapshotDataUrl);
         }
+        if (data.savedPath) {
+          setSnapshotPath(data.savedPath);
+        }
         await loadIntrinsicSamples();
         return;
       }
@@ -1112,6 +2009,9 @@ export default function Home() {
       if (data.snapshotDataUrl) {
         setSnapshotDataUrl(data.snapshotDataUrl);
       }
+      if (data.savedPath) {
+        setSnapshotPath(data.savedPath);
+      }
       await loadIntrinsicSamples();
     } catch (err) {
       setIntrinsicStatus(err instanceof Error ? err.message : "Intrinsic sample capture failed");
@@ -1134,8 +2034,17 @@ export default function Home() {
         throw new Error(data?.error || "Intrinsic solve failed");
       }
 
-      const rms = data?.result?.result?.rms;
-      setIntrinsicsPath(data.outputNpz || "");
+      const solved = data?.result?.result || null;
+      const rms = solved?.rms;
+      const outputNpz = data.outputNpz || "";
+
+      setIntrinsicSolveResult(solved);
+      setIntrinsicsPath(outputNpz);
+      if (outputNpz) {
+        setStageResolvedOutputs((prev) => ({ ...prev, intrinsic: outputNpz }));
+      }
+      setCompletedStages((prev) => ({ ...prev, intrinsic: true }));
+      setStageMessage("intrinsic", `Solved intrinsic. RMS=${typeof rms === "number" ? rms.toFixed(4) : "n/a"}`);
       setIntrinsicStatus(`Intrinsic solved. RMS=${typeof rms === "number" ? rms.toFixed(4) : "n/a"}`);
     } catch (err) {
       setIntrinsicStatus(err instanceof Error ? err.message : "Intrinsic solve failed");
@@ -1183,26 +2092,46 @@ export default function Home() {
   }
 
   function handleCadPick(world) {
+    if (imagePickMode === "validation") {
+      setSolveStatus("Validation mode is automatic. Click image point to project onto CAD ground.");
+      return;
+    }
+
+    if ((imagePickMode === "z" || imagePickMode === "z-tip") && pendingZGroundIndex !== null && pendingZImageTip !== null) {
+      const base = correspondences[pendingZGroundIndex];
+      if (!base) {
+        setSolveStatus("Base pair not found. Try again.");
+        setPendingZGroundIndex(null);
+        setPendingZImageTip(null);
+        setImagePickMode("z");
+        return;
+      }
+      setZMappings((prev) => [...prev, {
+        baseIndex: pendingZGroundIndex,
+        worldBase: base.world,
+        worldZ: [Number(world.x ?? world[0]), Number(world.y ?? world[1]), Number(world.z ?? world[2])],
+        pixelBase: base.pixel,
+        pixelZ: pendingZImageTip,
+      }]);
+      setPendingZGroundIndex(null);
+      setPendingZImageTip(null);
+      setImagePickMode("z");
+      setSolveStatus("Z-direction mapping added. Click another ground marker for next Z pair, or switch mode.");
+      return;
+    }
+
     if (!pendingImagePoint) {
       setSolveStatus("First click on snapshot image to choose pixel point, then pick CAD point.");
       return;
     }
 
-    const pair = {
-      world,
-      pixel: pendingImagePoint,
-    };
-
-    if (imagePickMode === "validation") {
-      setValidationPairs((prev) => [...prev, pair]);
-      setPendingWorldPoint(null);
-      setPendingImagePoint(null);
-      setValidationStatus("Validation point added. Add more points and run validation.");
-      setSolveStatus("Validation point pair added.");
-      return;
-    }
-
     setCorrespondences((prev) => {
+      const markerId = `m${prev.length + 1}`;
+      const pair = {
+        markerId,
+        world,
+        pixel: pendingImagePoint,
+      };
       const next = [...prev, pair];
       setCorrespondenceText(JSON.stringify(next, null, 2));
       return next;
@@ -1228,40 +2157,131 @@ export default function Home() {
     const xPix = xView * scaleX;
     const yPix = yView * scaleY;
 
-    if (imagePickMode === "z" && pendingZGroundIndex !== null) {
-      const base = correspondences[pendingZGroundIndex];
-      if (!base) {
-        setSolveStatus("Selected ground point not found. Choose again.");
-        setPendingZGroundIndex(null);
+    if (imagePickMode === "shared-marker" && pendingSharedMarkerIndex !== null) {
+      if (!activeProjectCameraId) {
+        setSolveStatus("Open/select a project camera first.");
+        setPendingSharedMarkerIndex(null);
+        setImagePickMode("ground");
         return;
       }
 
-      const wz = [
-        Number(base.world[0]),
-        Number(base.world[1]),
-        Number(base.world[2]) + Number(zOffsetMeters),
-      ];
+      const marker = sharedMarkers[pendingSharedMarkerIndex];
+      if (!marker || !Array.isArray(marker.world) || marker.world.length !== 3) {
+        setSolveStatus("Shared marker is missing world coordinates.");
+        setPendingSharedMarkerIndex(null);
+        setImagePickMode("ground");
+        return;
+      }
 
-      const item = {
-        baseIndex: pendingZGroundIndex,
-        worldBase: base.world,
-        worldZ: wz,
-        pixelBase: base.pixel,
-        pixelZ: [xPix, yPix],
+      const markerId = String(marker.id || marker.markerId || `m${pendingSharedMarkerIndex + 1}`);
+      const pixel = [xPix, yPix];
+
+      setCorrespondences((prev) => {
+        let found = false;
+        const next = prev.map((item) => {
+          if (String(item.markerId || "") === markerId) {
+            found = true;
+            return {
+              markerId,
+              world: [Number(marker.world[0]), Number(marker.world[1]), Number(marker.world[2])],
+              pixel,
+            };
+          }
+          return item;
+        });
+
+        if (!found) {
+          next.push({
+            markerId,
+            world: [Number(marker.world[0]), Number(marker.world[1]), Number(marker.world[2])],
+            pixel,
+          });
+        }
+
+        setCorrespondenceText(JSON.stringify(next, null, 2));
+        return next;
+      });
+
+      const updatedMarkers = sharedMarkers.map((item, index) => {
+        if (index !== pendingSharedMarkerIndex) {
+          return item;
+        }
+        return {
+          ...item,
+          observations: {
+            ...(item.observations || {}),
+            [activeProjectCameraId]: pixel,
+          },
+        };
+      });
+      setSharedMarkers(updatedMarkers);
+
+      const nextIdx = updatedMarkers.findIndex((item) => {
+        const hasWorld = Array.isArray(item.world) && item.world.length === 3;
+        const hasCurrentObs = item?.observations?.[activeProjectCameraId];
+        return hasWorld && !hasCurrentObs;
+      });
+
+      if (nextIdx >= 0) {
+        const nextMarker = updatedMarkers[nextIdx];
+        setPendingSharedMarkerIndex(nextIdx);
+        setSolveStatus(`Saved marker '${markerId}'. Next marker: '${nextMarker.id}'.`);
+      } else {
+        setPendingSharedMarkerIndex(null);
+        setImagePickMode("ground");
+        setSolveStatus(`Saved marker '${markerId}'. Shared marker capture is complete for this camera.`);
+      }
+
+      setPendingImagePoint(null);
+      return;
+    }
+
+    if (imagePickMode === "z-tip" && pendingZGroundIndex !== null && pendingZImageTip === null) {
+      setPendingZImageTip([xPix, yPix]);
+      setSolveStatus(`Z-direction tip marked in image. Now click the matching point in the CAD viewer.`);
+      return;
+    }
+
+    if (imagePickMode === "validation") {
+      const readiness = getGroundValidationReadiness();
+      if (!readiness.enabled) {
+        setSolveStatus(readiness.status);
+        setValidationStatus(readiness.status);
+        return;
+      }
+
+      const projectedWorld = estimateGroundWorldFromPixel([xPix, yPix]);
+      if (!projectedWorld) {
+        setSolveStatus("Failed to project point onto CAD ground. Add clean pairs and rerun Solve PnP.");
+        return;
+      }
+
+      const pair = {
+        world: projectedWorld,
+        pixel: [xPix, yPix],
       };
 
-      setZMappings((prev) => [...prev, item]);
-      setPendingZGroundIndex(null);
-      setSolveStatus("Z-direction point added.");
+      setValidationPairs((prev) => [...prev, pair]);
+      setPendingWorldPoint(null);
+      setPendingImagePoint(null);
+      setValidationStatus("Validation point projected on CAD. Add more points and run validation.");
+      setSolveStatus(
+        `Validation point projected: P[${xPix.toFixed(1)}, ${yPix.toFixed(1)}] → W[${projectedWorld
+          .map((value) => Number(value).toFixed(2))
+          .join(", ")}]`
+      );
       return;
     }
 
     setPendingImagePoint([xPix, yPix]);
-    if (imagePickMode === "validation") {
-      setSolveStatus(`Validation image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
-      return;
-    }
     setSolveStatus(`Image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
+  }
+
+  function onSnapshotImageLoad(e) {
+    setSnapshotNaturalSize({
+      width: e.currentTarget.naturalWidth || 1,
+      height: e.currentTarget.naturalHeight || 1,
+    });
   }
 
   function beginZPointCapture() {
@@ -1269,27 +2289,170 @@ export default function Home() {
       setSolveStatus("Add ground-plane pairs first.");
       return;
     }
-    const idx = Math.max(0, Math.min(correspondences.length - 1, selectedGroundPairIndex));
     setImagePickMode("z");
+    setPendingZGroundIndex(null);
+    setPendingZImageTip(null);
+    setPendingSharedMarkerIndex(null);
+    setSolveStatus("Z-direction mode: click a ground marker (green circle) to select the anchor point.");
+  }
+
+  function onZGroundMarkerClick(idx) {
+    if (imagePickMode !== "z") return;
     setPendingZGroundIndex(idx);
-    setSolveStatus(`Z-point capture armed for ground pair #${idx + 1}. Click image point above it.`);
+    setPendingZImageTip(null);
+    setImagePickMode("z-tip");
+    setSolveStatus(`Anchor: ground pair #${idx + 1}. Now click the Z-direction tip point anywhere in the image.`);
   }
 
   function setGroundPickMode() {
     setImagePickMode("ground");
     setPendingZGroundIndex(null);
+    setPendingZImageTip(null);
+    setPendingSharedMarkerIndex(null);
     setSolveStatus("Ground pick mode active.");
   }
 
+  function getGroundValidationReadiness() {
+    if (correspondences.length < 4) {
+      return { enabled: false, status: "Validation unlock requires at least 4 image↔CAD pairs." };
+    }
+    if (!completedStages["ground-plane"]) {
+      return { enabled: false, status: "Validation unlock requires Ground Plane stage completion." };
+    }
+    const hasYaml = !!latestCalibrationYamlPath;
+    return {
+      enabled: true,
+      status: hasYaml
+        ? "Ready. Click image points to project them onto CAD ground (homography + PnP YAML available)."
+        : "Ready. Click image points to project them onto CAD ground (homography mode — run Solve PnP for full metrics).",
+    };
+  }
+
+  function solveLinearSystem(matrix, vector) {
+    const n = matrix.length;
+    const A = matrix.map((row) => [...row]);
+    const b = [...vector];
+
+    for (let i = 0; i < n; i += 1) {
+      let pivot = i;
+      for (let r = i + 1; r < n; r += 1) {
+        if (Math.abs(A[r][i]) > Math.abs(A[pivot][i])) {
+          pivot = r;
+        }
+      }
+
+      if (Math.abs(A[pivot][i]) < 1e-10) {
+        return null;
+      }
+
+      if (pivot !== i) {
+        [A[i], A[pivot]] = [A[pivot], A[i]];
+        [b[i], b[pivot]] = [b[pivot], b[i]];
+      }
+
+      const diag = A[i][i];
+      for (let c = i; c < n; c += 1) {
+        A[i][c] /= diag;
+      }
+      b[i] /= diag;
+
+      for (let r = 0; r < n; r += 1) {
+        if (r === i) {
+          continue;
+        }
+        const factor = A[r][i];
+        if (Math.abs(factor) < 1e-12) {
+          continue;
+        }
+        for (let c = i; c < n; c += 1) {
+          A[r][c] -= factor * A[i][c];
+        }
+        b[r] -= factor * b[i];
+      }
+    }
+
+    return b;
+  }
+
+  function estimateGroundWorldFromPixel(pixel) {
+    const validPairs = normalizeCorrespondenceList(correspondences)
+      .filter((item) => Array.isArray(item.world) && item.world.length === 3 && Array.isArray(item.pixel) && item.pixel.length === 2);
+
+    if (validPairs.length < 4) {
+      return null;
+    }
+
+    const A = [];
+    const rhs = [];
+
+    for (const pair of validPairs) {
+      const u = Number(pair.pixel[0]);
+      const v = Number(pair.pixel[1]);
+      const x = Number(pair.world[0]);
+      const y = Number(pair.world[1]);
+
+      A.push([u, v, 1, 0, 0, 0, -x * u, -x * v]);
+      rhs.push(x);
+      A.push([0, 0, 0, u, v, 1, -y * u, -y * v]);
+      rhs.push(y);
+    }
+
+    const normal = Array.from({ length: 8 }, () => Array(8).fill(0));
+    const target = Array(8).fill(0);
+
+    for (let r = 0; r < A.length; r += 1) {
+      const row = A[r];
+      for (let i = 0; i < 8; i += 1) {
+        target[i] += row[i] * rhs[r];
+        for (let j = 0; j < 8; j += 1) {
+          normal[i][j] += row[i] * row[j];
+        }
+      }
+    }
+
+    const h = solveLinearSystem(normal, target);
+    if (!h) {
+      return null;
+    }
+
+    const [u0, v0] = pixel;
+    const den = h[6] * u0 + h[7] * v0 + 1;
+    if (Math.abs(den) < 1e-10) {
+      return null;
+    }
+
+    const x0 = (h[0] * u0 + h[1] * v0 + h[2]) / den;
+    const y0 = (h[3] * u0 + h[4] * v0 + h[5]) / den;
+    const z0 = validPairs.length ? Number(validPairs[0].world[2] || 0) : 0;
+
+    if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(z0)) {
+      return null;
+    }
+
+    return [x0, y0, z0];
+  }
+
   function setValidationPickMode() {
+    const readiness = getGroundValidationReadiness();
+    if (!readiness.enabled) {
+      setSolveStatus(readiness.status);
+      setValidationStatus(readiness.status);
+      return;
+    }
+
     setImagePickMode("validation");
     setPendingZGroundIndex(null);
-    setSolveStatus("Validation pick mode active. Click image point, then pick matching CAD point.");
+    setPendingZImageTip(null);
+    setPendingSharedMarkerIndex(null);
+    setPendingImagePoint(null);
+    setSolveStatus("Validation pick mode active. Click image point to project it onto CAD ground.");
   }
 
   function clearZMappings() {
     setZMappings([]);
     setPendingZGroundIndex(null);
+    setPendingZImageTip(null);
+    setImagePickMode("ground");
   }
 
   function undoZMapping() {
@@ -1346,11 +2509,81 @@ export default function Home() {
     };
   }, [draggingImagePointIndex]);
 
+  useEffect(() => {
+    if (!routeProjectId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadRoutedProject() {
+      try {
+        setProjectStatus(`Loading project '${routeProjectId}'...`);
+        const res = await fetch(`/api/calibration/web/projects/${encodeURIComponent(routeProjectId)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error || "Failed to load project");
+        }
+        if (cancelled) {
+          return;
+        }
+        hydrateProjectState(data?.projectConfig, data?.outputPath || "", "Opened");
+      } catch (err) {
+        if (!cancelled) {
+          setProjectStatus(err instanceof Error ? err.message : "Failed to load project");
+        }
+      }
+    }
+
+    loadRoutedProject();
+    return () => {
+      cancelled = true;
+    };
+  }, [routeProjectId]);
+
+  useEffect(() => {
+    if (!routeCameraId || !projectCameras.length) {
+      return;
+    }
+
+    const exists = projectCameras.some((camera) => camera.id === routeCameraId);
+    if (!exists) {
+      setProjectStatus(`Camera '${routeCameraId}' not found in loaded project.`);
+      return;
+    }
+
+    if (activeProjectCameraId !== routeCameraId) {
+      openProjectCamera(routeCameraId);
+    }
+  }, [routeCameraId, projectCameras]);
+
+  useEffect(() => {
+    const resolvedDwgPath = String(dwgPath || "").trim();
+    if (!resolvedDwgPath) {
+      cadPreviewAttemptedPathRef.current = "";
+      return;
+    }
+
+    if (segments.length > 0) {
+      setDwgMessage(`Shared CAD loaded: ${dwgFileName || resolvedDwgPath.split("/").pop() || resolvedDwgPath}`);
+      return;
+    }
+
+    if (cadPreviewAttemptedPathRef.current === resolvedDwgPath) {
+      setDwgMessage(`Shared CAD path loaded: ${dwgFileName || resolvedDwgPath.split("/").pop() || resolvedDwgPath}`);
+      return;
+    }
+
+    cadPreviewAttemptedPathRef.current = resolvedDwgPath;
+    loadCadPreviewByPath(resolvedDwgPath);
+  }, [dwgPath, dwgFileName, segments.length]);
+
   function clearPairs() {
     setCorrespondences([]);
     setCorrespondenceText("[]");
     setPendingWorldPoint(null);
     setPendingImagePoint(null);
+    setPendingSharedMarkerIndex(null);
   }
 
   function undoPair() {
@@ -1380,7 +2613,7 @@ export default function Home() {
 
   async function runHeadlessSolve() {
     try {
-      const correspondences = JSON.parse(correspondenceText);
+      const correspondences = normalizeCorrespondenceList(JSON.parse(correspondenceText));
       const res = await fetch("/api/calibration/web/solve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1393,9 +2626,28 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(data?.error || "Headless solve failed");
       }
+      const solved = data?.result?.result || null;
+      setPnpSolveResult(solved);
       setLatestCalibrationYamlPath(data.outputYaml || "");
+      if (data.outputYaml) {
+        setStageResolvedOutputs((prev) => ({ ...prev, "ground-plane": data.outputYaml }));
+      }
+      setCompletedStages((prev) => ({ ...prev, "ground-plane": true }));
+      setStageMessage("ground-plane", "PnP solved from point pairs.");
       setValidationStatus(`Calibration ready for validation: ${data.outputYaml}`);
       setSolveStatus(`Headless solve OK. Output: ${data.outputYaml}`);
+
+      if (activeProjectCameraId) {
+        setCameraWorkspaces((prev) => ({
+          ...prev,
+          [activeProjectCameraId]: {
+            ...(prev[activeProjectCameraId] || {}),
+            ...buildCurrentWorkspacePayload(),
+            correspondences: deepClone(correspondences),
+            latestCalibrationYamlPath: data.outputYaml || "",
+          },
+        }));
+      }
     } catch (err) {
       setSolveStatus(err instanceof Error ? err.message : "Headless solve failed");
     }
@@ -1403,64 +2655,148 @@ export default function Home() {
 
   async function runLiveValidation() {
     try {
+      if (correspondences.length < 4) {
+        throw new Error("Validation requires at least 4 image↔CAD ground pairs.");
+      }
+      if (!completedStages["ground-plane"]) {
+        throw new Error("Validation requires Ground Plane stage completion.");
+      }
       if (!validationPairs.length) {
-        throw new Error("Add at least 1 validation point (switch to Validation pick mode first).");
+        throw new Error("Add at least 1 validation point (switch to Validation pick mode and click image points first).");
       }
 
       const calibrationYamlPath = latestCalibrationYamlPath || stageResolvedOutputs["ground-plane"] || "";
-      if (!calibrationYamlPath) {
-        throw new Error("Calibration YAML path is required. Run 'Solve PnP from Pairs' first.");
+
+      // Compute homography-based reprojection error from validation pairs (client-side)
+      let homographyRmse = null;
+      {
+        const errors = validationPairs.map((vp) => {
+          const projected = estimateGroundWorldFromPixel(vp.image);
+          if (!projected) return null;
+          const dx = projected.x - vp.world.x;
+          const dy = projected.y - vp.world.y;
+          return Math.sqrt(dx * dx + dy * dy);
+        }).filter((e) => e !== null);
+        if (errors.length > 0) {
+          homographyRmse = Math.sqrt(errors.reduce((s, e) => s + e * e, 0) / errors.length);
+        }
       }
 
-      const res = await fetch("/api/calibration/web/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          validationPoints: validationPairs,
-          calibrationYamlPath,
-          intrinsicsPath,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || "Live validation failed");
+      if (homographyRmse !== null) {
+        setValidationStatus(`Homography validation: ${validationPairs.length} points, World RMSE = ${homographyRmse.toFixed(4)} m${calibrationYamlPath ? " (running full API validation too…)" : ""}`);
       }
 
-      const result = data?.validation || null;
-      setValidationResult(result);
+      // If PnP YAML is available, also run server-side validation for full metrics
+      if (calibrationYamlPath) {
+        const res = await fetch("/api/calibration/web/validate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            validationPoints: validationPairs,
+            calibrationYamlPath,
+            intrinsicsPath,
+          }),
+        });
 
-      const worldRmse = result?.metrics?.world_error?.rmse;
-      const reprojRmse = result?.metrics?.reprojection_error_px?.rmse;
-      setValidationStatus(
-        `Validation OK. World RMSE=${typeof worldRmse === "number" ? worldRmse.toFixed(4) : "n/a"} m, Reprojection RMSE=${typeof reprojRmse === "number" ? reprojRmse.toFixed(2) : "n/a"} px`
-      );
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error || "Live validation failed");
+        }
+
+        const result = data?.validation || null;
+        setValidationResult(result);
+
+        const worldRmse = result?.metrics?.world_error?.rmse;
+        const reprojRmse = result?.metrics?.reprojection_error_px?.rmse;
+        setValidationStatus(
+          `Validation OK. World RMSE=${typeof worldRmse === "number" ? worldRmse.toFixed(4) : "n/a"} m` +
+          `, Reprojection RMSE=${typeof reprojRmse === "number" ? reprojRmse.toFixed(2) : "n/a"} px` +
+          (homographyRmse !== null ? ` | Homography RMSE=${homographyRmse.toFixed(4)} m` : "")
+        );
+      } else if (homographyRmse !== null) {
+        setValidationStatus(`Homography validation: ${validationPairs.length} points, World RMSE = ${homographyRmse.toFixed(4)} m. Run 'Solve PnP from Pairs' for full reprojection metrics.`);
+      }
     } catch (err) {
       setValidationStatus(err instanceof Error ? err.message : "Live validation failed");
     }
   }
 
+  function getComputedStageSummary(stage) {
+    if (stage === "intrinsic" && intrinsicSolveResult) {
+      const K = intrinsicSolveResult?.K;
+      const D = intrinsicSolveResult?.D;
+      return {
+        rms: intrinsicSolveResult?.rms,
+        validImageCount: intrinsicSolveResult?.valid_image_count,
+        fx: K?.[0]?.[0],
+        fy: K?.[1]?.[1],
+        cx: K?.[0]?.[2],
+        cy: K?.[1]?.[2],
+        K,
+        D,
+      };
+    }
+
+    if (stage === "intrinsic") {
+      const intrinsicJsonOutput = stageOutputDetails?.intrinsic?.previewJson?.output;
+      if (intrinsicJsonOutput && typeof intrinsicJsonOutput === "object") {
+        return {
+          rms: intrinsicJsonOutput?.rms,
+          validImageCount: intrinsicJsonOutput?.validImageCount,
+          fx: intrinsicJsonOutput?.fx,
+          fy: intrinsicJsonOutput?.fy,
+          cx: intrinsicJsonOutput?.cx,
+          cy: intrinsicJsonOutput?.cy,
+          K: intrinsicJsonOutput?.K,
+          D: intrinsicJsonOutput?.D,
+        };
+      }
+    }
+
+    if (stage === "ground-plane" && pnpSolveResult) {
+      return {
+        mode: pnpSolveResult?.mode,
+        reprojectionRmsePx: pnpSolveResult?.pose?.reproj_rmse_px,
+        inliers: pnpSolveResult?.pose?.inliers,
+        rvec: pnpSolveResult?.pose?.rvec,
+        tvec: pnpSolveResult?.pose?.tvec,
+        correspondenceCount: Array.isArray(pnpSolveResult?.correspondences) ? pnpSolveResult.correspondences.length : undefined,
+      };
+    }
+
+    if (stage === "z-mapping") {
+      return { zMappings: zMappings.length, snapshotReady: Boolean(snapshotDataUrl) };
+    }
+
+    if (stage === "cad-3d-dwg") {
+      return {
+        cadSegments: segments.length,
+        groundPoints: correspondences.length,
+        zDirectionPoints: zMappings.length,
+      };
+    }
+
+    return null;
+  }
+
   function renderStageStatus(stage) {
     const state = stageJobState[stage] || { status: "idle", progress: 0, logs: [] };
-    const outputPath = stageResolvedOutputs[stage] || stageOutputs[stage] || "";
+    const outputPath = getStageOutputPath(stage);
+    const details = stageOutputDetails[stage] || null;
+    const staleMissingPath = Boolean(details?.missing && details?.path && details.path === outputPath);
+    const visibleOutputPath = staleMissingPath ? "" : outputPath;
     const readiness = getStageReadiness(stage);
-    const effectiveLogs = (state.logs && state.logs.length)
-      ? state.logs
-      : [readiness.status || "No logs yet"];
     return (
-      <div className="space-y-2 rounded border border-zinc-700 p-3">
-        <div className="flex items-center justify-between text-xs">
-          <span>Status: {state.status}</span>
-          <span>Progress: {state.progress}%</span>
-        </div>
-        <div className="h-2 rounded bg-zinc-800">
-          <div className="h-2 rounded bg-cyan-500" style={{ width: `${state.progress}%` }} />
-        </div>
-        <pre className="max-h-40 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-300">
-          {effectiveLogs.slice(-120).join("\n")}
-        </pre>
-        {outputPath ? <p className="text-xs text-zinc-400 break-all">Output: {outputPath}</p> : null}
-      </div>
+      <StageStatusCard
+        state={state}
+        outputPath={visibleOutputPath}
+        fallbackStatus={readiness.status}
+        computedSummary={getComputedStageSummary(stage)}
+        outputDetails={staleMissingPath ? null : details}
+        outputDetailsLoading={Boolean(stageOutputLoading[stage])}
+        onLoadOutputDetails={() => inspectStageOutput(stage, visibleOutputPath)}
+        downloadHref={getOutputDownloadHref(visibleOutputPath)}
+      />
     );
   }
 
@@ -1524,24 +2860,99 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
-          <h2 className="text-lg font-medium">Combined Calibration Sequence</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={runCombinedSequence}
-              disabled={sequenceRunning || jobLoading}
-              className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
-            >
-              {sequenceRunning ? "Running Combined Sequence..." : "Run All Calibration Stages"}
-            </button>
-            <span className="text-xs text-zinc-400">{sequenceStatus}</span>
-          </div>
-          {sequenceLogs.length ? (
-            <pre className="max-h-36 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-300">
-              {sequenceLogs.join("\n")}
-            </pre>
-          ) : null}
-        </section>
+        {routeProjectId ? (
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+            <h2 className="text-lg font-medium">Project Camera Navigation</h2>
+            <p className="text-sm text-zinc-400">Project: {routeProjectId} {routeCameraId ? `• Camera: ${routeCameraId}` : ""}</p>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href={projectHomeHref || `/project/${encodeURIComponent(routeProjectId)}`}
+                className="rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm hover:bg-zinc-700/60"
+              >
+                Go back to list of cameras
+              </a>
+              {nextCameraHref ? (
+                <a
+                  href={nextCameraHref}
+                  className="rounded border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm hover:bg-emerald-800/50"
+                >
+                  Go to next camera
+                </a>
+              ) : (
+                <span className="rounded border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-sm text-zinc-400">No next camera</span>
+              )}
+              <button
+                onClick={saveCurrentProjectConfig}
+                className="rounded border border-sky-700 bg-sky-900/40 px-3 py-2 text-sm hover:bg-sky-800/50"
+              >
+                Save current camera progress
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 break-all">{projectStatus}</p>
+          </section>
+        ) : null}
+
+        {hideProjectWorkflow ? null : (
+          <ProjectWorkflowSection
+            data={{
+              projectOpenPath,
+              projectStatus,
+              projectName,
+              projectDescription,
+              projectSharedDwgPath,
+              projectSharedDwgFileName,
+              projectDraftName,
+              projectDraftDescription,
+              projectDraftSharedDwgPath,
+              projectDraftCameras,
+              projectConfigPath,
+              projectCameras,
+              sharedMarkers,
+              activeProjectCameraId,
+              projectRunStageChain,
+              projectAutoTriangulate,
+              projectSequenceRunning,
+              projectSequenceStatus,
+              triangulationStatus,
+              projectSequenceLogs,
+              triangulationResult,
+            }}
+            actions={{
+              setProjectOpenPath,
+              setProjectDraftName,
+              setProjectDraftDescription,
+              setProjectDraftSharedDwgPath,
+              addProjectDraftCamera,
+              updateProjectDraftCamera,
+              removeProjectDraftCamera,
+              uploadDwg,
+              useCurrentDwgForDraft,
+              createProjectFromDraft,
+              saveCurrentProjectConfig,
+              uploadProjectConfig,
+              openProjectByPath,
+              openProjectCamera,
+              syncCurrentPairsToSharedMarkers,
+              beginSharedMarkerCapture,
+              stopSharedMarkerCapture,
+              setProjectRunStageChain,
+              setProjectAutoTriangulate,
+              runProjectSequence,
+              runProjectTriangulation,
+            }}
+            refs={{ projectConfigInputRef, projectSharedDwgInputRef }}
+          />
+        )}
+
+        <CombinedSequenceSection
+          data={{
+            sequenceRunning,
+            jobLoading,
+            sequenceStatus,
+            sequenceLogs,
+          }}
+          actions={{ runCombinedSequence }}
+        />
 
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
@@ -1579,494 +2990,193 @@ export default function Home() {
           )}
         </section>
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
-          <h2 className="text-xl font-semibold">Step 1: Intrinsic Calibration</h2>
-          {!stageAllowed("intrinsic") ? <p className="text-xs text-amber-300">Complete previous stage first.</p> : null}
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3">
-              <div className="grid gap-2 sm:grid-cols-3">
-                <label className="text-xs">Session ID
-                  <input value={intrinsicSessionId} onChange={(e) => setIntrinsicSessionId(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
-                </label>
-                <label className="text-xs">Checkerboard
-                  <input value={checkerboard} onChange={(e) => setCheckerboard(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
-                </label>
-                <label className="text-xs">Square (m)
-                  <input type="number" step="0.001" value={squareSize} onChange={(e) => setSquareSize(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
-                </label>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <label className="text-xs">Print Square (mm)
-                  <input type="number" min={5} step="1" value={checkerboardSquareMm} onChange={(e) => setCheckerboardSquareMm(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
-                </label>
-                <div className="sm:col-span-2 flex items-end">
-                  <button onClick={downloadCheckerboardPdf} className="rounded border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm hover:bg-emerald-800/50">
-                    Download A3 Landscape Checkerboard PDF
-                  </button>
-                </div>
-              </div>
-              <p className="text-xs text-zinc-400">{checkerboardPdfStatus}</p>
-              <label className="block text-xs">Stage Output Path
-                <input value={stageOutputs.intrinsic || ""} onChange={(e) => setStageOutput("intrinsic", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={captureIntrinsicSample} className="rounded border border-blue-700 bg-blue-900/40 px-3 py-2 text-sm hover:bg-blue-800/50">Capture Sample</button>
-                {intrinsicSampleCount >= minSamples ? (
-                  <button onClick={solveIntrinsicWeb} className="rounded border border-blue-700 bg-blue-900/40 px-3 py-2 text-sm hover:bg-blue-800/50">Solve Intrinsic</button>
-                ) : null}
-                <button
-                  disabled={jobLoading || sequenceRunning || !stageAllowed("intrinsic")}
-                  onClick={() => runStageCard("intrinsic")}
-                  className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
-                >
-                  Run Intrinsic Stage
-                </button>
-              </div>
-              <p className="text-xs text-zinc-300">{intrinsicStatus} (Samples: {intrinsicSampleCount}/{minSamples})</p>
-              <p className="text-xs text-zinc-400 break-all">Intrinsics: {intrinsicsPath || "not solved yet"}</p>
-              <div className="rounded border border-zinc-700 p-3 space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span>Sample Preview Carousel</span>
-                  <span>{intrinsicSamples.length ? `${intrinsicActiveIndex + 1}/${intrinsicSamples.length}` : "0/0"}</span>
-                </div>
-                {intrinsicSamples.length ? (
-                  <>
-                    <img
-                      src={intrinsicSamples[intrinsicActiveIndex]?.dataUrl}
-                      alt={intrinsicSamples[intrinsicActiveIndex]?.name || "intrinsic sample"}
-                      className="w-full max-h-[220px] rounded border border-zinc-700 object-contain bg-black"
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        onClick={() => setIntrinsicActiveIndex((i) => Math.max(0, i - 1))}
-                        disabled={intrinsicActiveIndex <= 0}
-                        className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800 disabled:opacity-40"
-                      >
-                        Previous
-                      </button>
-                      <button
-                        onClick={() => setIntrinsicActiveIndex((i) => Math.min(intrinsicSamples.length - 1, i + 1))}
-                        disabled={intrinsicActiveIndex >= intrinsicSamples.length - 1}
-                        className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800 disabled:opacity-40"
-                      >
-                        Next
-                      </button>
-                      <button
-                        onClick={() => deleteIntrinsicSample(intrinsicSamples[intrinsicActiveIndex]?.name)}
-                        className="rounded border border-rose-700 bg-rose-900/30 px-2 py-1 text-xs hover:bg-rose-800/40"
-                      >
-                        Delete Current
-                      </button>
-                      <button
-                        onClick={loadIntrinsicSamples}
-                        className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-                    <p className="text-xs text-zinc-500 break-all">{intrinsicSamples[intrinsicActiveIndex]?.name}</p>
-                  </>
-                ) : (
-                  <p className="text-xs text-zinc-400">No intrinsic samples captured yet.</p>
-                )}
-              </div>
-              {renderStageStatus("intrinsic")}
-            </div>
-            <div className="space-y-2">
-              <div className="text-sm text-zinc-300">Live Camera Feed</div>
-              {sourceMode === "webcam" ? (
-                <video ref={intrinsicVideoRef} autoPlay playsInline muted className="w-full max-h-[360px] rounded border border-zinc-700 object-contain bg-black" />
-              ) : feedEnabled ? (
-                <img src={liveFeedSrc} onError={onFeedError} onLoad={() => setFeedError("")} alt="Intrinsic feed" className="w-full max-h-[360px] rounded border border-zinc-700 object-contain bg-black" />
-              ) : (
-                <div className="rounded border border-zinc-700 p-6 text-sm text-zinc-400">Start camera feed to preview intrinsic capture.</div>
-              )}
-              {snapshotDataUrl ? <img src={snapshotDataUrl} alt="Intrinsic snapshot" className="w-full max-h-[220px] rounded border border-zinc-700 object-contain bg-black" /> : null}
-            </div>
-          </div>
-        </section>
+        <IntrinsicStepSection
+          data={{
+            intrinsicAllowed: stageAllowed("intrinsic"),
+            intrinsicSessionId,
+            checkerboard,
+            squareSize,
+            checkerboardSquareMm,
+            checkerboardPdfStatus,
+            stageOutputIntrinsic: stageOutputs.intrinsic,
+            intrinsicSampleCount,
+            minSamples,
+            intrinsicStatus,
+            intrinsicsPath,
+            intrinsicSolveResult,
+            intrinsicDownloadHref: getOutputDownloadHref(intrinsicsPath),
+            intrinsicSamples,
+            intrinsicActiveIndex,
+            sourceMode,
+            feedEnabled,
+            liveFeedSrc,
+            snapshotDataUrl,
+            jobLoading,
+            sequenceRunning,
+          }}
+          actions={{
+            setIntrinsicSessionId,
+            setCheckerboard,
+            setSquareSize,
+            setCheckerboardSquareMm,
+            setStageOutput,
+            captureIntrinsicSample,
+            solveIntrinsicWeb,
+            runStageCard,
+            setIntrinsicActiveIndex,
+            deleteIntrinsicSample,
+            loadIntrinsicSamples,
+            downloadCheckerboardPdf,
+            downloadIntrinsicSummary,
+            onFeedError,
+            clearFeedError,
+          }}
+          refs={{ intrinsicVideoRef }}
+          renderStageStatus={renderStageStatus}
+        />
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
-          <h2 className="text-xl font-semibold">Step 2: Ground Plane Calibration</h2>
-          <p className={`text-xs ${getStageReadiness("ground-plane").enabled ? "text-emerald-300" : "text-amber-300"}`}>
-            {getStageReadiness("ground-plane").status}
-          </p>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3">
-              <div className="text-sm text-zinc-300">Camera side (draw image points)</div>
-              <div className="text-xs text-zinc-400">Workflow: click image point first, then pick CAD point. Existing image points are draggable.</div>
-              <div className="text-xs text-zinc-400">
-                Pick mode: {imagePickMode === "validation" ? "Validation" : imagePickMode === "z" ? "Z Mapping" : "Ground"}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={setGroundPickMode} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Ground Pick Mode</button>
-                <button onClick={setValidationPickMode} className="rounded border border-amber-700 bg-amber-900/30 px-2 py-1 text-xs hover:bg-amber-800/40">Validation Pick Mode</button>
-              </div>
-              {sourceMode === "webcam" ? (
-                <video ref={groundVideoRef} autoPlay playsInline muted className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black" />
-              ) : feedEnabled ? (
-                <img src={liveFeedSrc} onError={onFeedError} onLoad={() => setFeedError("")} alt="Ground feed" className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black" />
-              ) : null}
-              <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Snapshot for Point Mapping</button>
-              <p className="text-xs text-zinc-400">{snapshotStatus}</p>
-              {snapshotDataUrl ? (
-                <div className="space-y-1">
-                  <div className="text-[11px] text-zinc-400">Left click to add image point. Drag green points to adjust.</div>
-                  <div className="rounded border border-zinc-700">
-                    <div className="relative w-full">
-                      <img
-                        ref={snapshotImgRef}
-                        src={snapshotDataUrl}
-                        onLoad={(e) => {
-                          setSnapshotNaturalSize({
-                            width: e.currentTarget.naturalWidth || 1,
-                            height: e.currentTarget.naturalHeight || 1,
-                          });
-                        }}
-                        alt="Ground snapshot"
-                        className="w-full max-h-[320px] rounded bg-black object-contain"
-                      />
-                      <svg
-                        ref={snapshotOverlayRef}
-                        onClick={onSnapshotPick}
-                        className="absolute inset-0 h-full w-full cursor-crosshair"
-                        viewBox={`0 0 ${snapshotNaturalSize.width} ${snapshotNaturalSize.height}`}
-                        preserveAspectRatio="none"
-                      >
-                    {correspondences.length >= 2 ? (
-                      <polygon
-                        points={correspondences.map((p) => `${p.pixel[0]},${p.pixel[1]}`).join(" ")}
-                        fill="rgba(34,197,94,0.15)"
-                        stroke="#22c55e"
-                        strokeWidth="2"
-                      />
-                    ) : null}
-                    {correspondences.map((p, idx) => (
-                      <g key={`img-p-${idx}`}>
-                        <circle
-                          cx={p.pixel[0]}
-                          cy={p.pixel[1]}
-                          r="9"
-                          fill="#22c55e"
-                          stroke="#052e16"
-                          strokeWidth="2"
-                          onMouseDown={(e) => onImagePointMouseDown(idx, e)}
-                          style={{ cursor: "grab" }}
-                        />
-                        <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#22c55e" fontSize="16" fontWeight="700">{idx + 1}</text>
-                      </g>
-                    ))}
-                    {validationPairs.map((p, idx) => (
-                      <g key={`val-p-${idx}`}>
-                        <circle
-                          cx={p.pixel[0]}
-                          cy={p.pixel[1]}
-                          r="8"
-                          fill="#f59e0b"
-                          stroke="#7c2d12"
-                          strokeWidth="2"
-                        />
-                        <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">V{idx + 1}</text>
-                      </g>
-                    ))}
-                    {pendingImagePoint ? (
-                      <g>
-                        <circle cx={pendingImagePoint[0]} cy={pendingImagePoint[1]} r="7" fill="#f59e0b" />
-                        <text x={pendingImagePoint[0] + 10} y={pendingImagePoint[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">{imagePickMode === "validation" ? "V" : "P"}</text>
-                      </g>
-                    ) : null}
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-              <div className="flex flex-wrap gap-2">
-                <button onClick={undoPair} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Undo Pair</button>
-                <button onClick={clearPairs} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Clear Pairs</button>
-              </div>
-              <div className="max-h-44 overflow-auto rounded border border-zinc-700 p-2 text-xs space-y-1">
-                {correspondences.map((p, idx) => (
-                  <div key={idx} className="flex items-center justify-between gap-2">
-                    <span>#{idx + 1} W[{p.world.map((v) => Number(v).toFixed(2)).join(",")}] → P[{p.pixel.map((v) => Number(v).toFixed(1)).join(",")}]</span>
-                    <button onClick={() => deletePair(idx)} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Delete</button>
-                  </div>
-                ))}
-              </div>
-              <div className="max-h-40 overflow-auto rounded border border-zinc-700 p-2 text-xs space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-zinc-300">Validation points: {validationPairs.length}</span>
-                  <button onClick={clearValidationPairs} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Clear Validation</button>
-                </div>
-                {validationPairs.map((p, idx) => (
-                  <div key={`val-row-${idx}`} className="flex items-center justify-between gap-2">
-                    <span>V{idx + 1} W[{p.world.map((v) => Number(v).toFixed(2)).join(",")}] → P[{p.pixel.map((v) => Number(v).toFixed(1)).join(",")}]</span>
-                    <button onClick={() => deleteValidationPair(idx)} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Delete</button>
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-zinc-300">{solveStatus}</p>
-            </div>
-            <div className="space-y-3">
-              <input
-                ref={dwgInputRef}
-                type="file"
-                accept=".dwg,.dxf"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) uploadDwg(f);
-                }}
-                className="hidden"
-              />
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => dwgInputRef.current?.click()} className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50">Upload CAD</button>
-                <button onClick={runHeadlessSolve} className="rounded border border-amber-700 bg-amber-900/40 px-3 py-2 text-sm hover:bg-amber-800/50">Solve PnP from Pairs</button>
-                <button
-                  disabled={jobLoading || sequenceRunning || !getStageReadiness("ground-plane").enabled}
-                  onClick={() => runStageCard("ground-plane")}
-                  className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
-                >
-                  Run Ground Plane Stage
-                </button>
-              </div>
-              <p className="text-xs text-zinc-400">{dwgMessage}</p>
-              <ProjectedCadViewer
-                segments={segments}
-                onPickWorld={handleCadPick}
-                pickedWorldPoints={[...correspondences.map((c) => c.world), ...validationPairs.map((p) => p.world)]}
-                title={pendingImagePoint ? "Pick CAD point for selected image point" : "First select image point, then CAD point"}
-              />
-              <label className="block text-xs">Ground Plane Output Path
-                <input value={stageOutputs["ground-plane"] || ""} onChange={(e) => setStageOutput("ground-plane", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-              </label>
-              {renderStageStatus("ground-plane")}
-            </div>
-          </div>
-        </section>
+        <GroundPlaneStepSection
+          data={{
+            groundReadiness: getStageReadiness("ground-plane"),
+            groundValidationReadiness: getGroundValidationReadiness(),
+            imagePickMode,
+            sourceMode,
+            feedEnabled,
+            liveFeedSrc,
+            snapshotStatus,
+            snapshotDataUrl,
+            snapshotNaturalSize,
+            correspondences,
+            validationPairs,
+            pendingImagePoint,
+            solveStatus,
+            jobLoading,
+            sequenceRunning,
+            allowCadUpload: !routeProjectId,
+            dwgMessage,
+            segments,
+            stageOutputGroundPlane: stageOutputs["ground-plane"],
+          }}
+          actions={{
+            setGroundPickMode,
+            setValidationPickMode,
+            beginSharedMarkerCapture,
+            onFeedError,
+            clearFeedError,
+            captureSnapshotWeb,
+            onSnapshotImageLoad,
+            onSnapshotPick,
+            onImagePointMouseDown,
+            undoPair,
+            clearPairs,
+            deletePair,
+            clearValidationPairs,
+            deleteValidationPair,
+            uploadDwg,
+            runHeadlessSolve,
+            runStageCard,
+            setStageOutput,
+            handleCadPick,
+          }}
+          refs={{
+            groundVideoRef,
+            snapshotImgRef,
+            snapshotOverlayRef,
+            dwgInputRef,
+          }}
+          renderStageStatus={renderStageStatus}
+        />
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
-          <h2 className="text-xl font-semibold">Live Validation: Pixel ↔ World Accuracy</h2>
-          <p className="text-xs text-zinc-400">
-            Real-world test flow: capture snapshot, switch to Validation pick mode, add known test points, run validation, then review world and reprojection errors.
-          </p>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3">
-              <label className="block text-xs">Calibration YAML Path
-                <input value={latestCalibrationYamlPath} onChange={(e) => setLatestCalibrationYamlPath(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={runLiveValidation} className="rounded border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm hover:bg-emerald-800/50">Run Live Validation</button>
-                <button onClick={clearValidationPairs} className="rounded border border-zinc-600 px-3 py-2 text-sm hover:bg-zinc-800">Clear Validation Points</button>
-              </div>
-              <p className="text-xs text-zinc-300">{validationStatus}</p>
-            </div>
-            <div className="space-y-2 rounded border border-zinc-700 p-3 text-xs">
-              <div>Validation points: {validationPairs.length}</div>
-              <div>Samples used: {validationResult?.sample_count ?? 0}</div>
-              <div>World mean error (m): {typeof validationResult?.metrics?.world_error?.mean === "number" ? validationResult.metrics.world_error.mean.toFixed(4) : "n/a"}</div>
-              <div>World RMSE (m): {typeof validationResult?.metrics?.world_error?.rmse === "number" ? validationResult.metrics.world_error.rmse.toFixed(4) : "n/a"}</div>
-              <div>World max error (m): {typeof validationResult?.metrics?.world_error?.max === "number" ? validationResult.metrics.world_error.max.toFixed(4) : "n/a"}</div>
-              <div>Reprojection mean (px): {typeof validationResult?.metrics?.reprojection_error_px?.mean === "number" ? validationResult.metrics.reprojection_error_px.mean.toFixed(2) : "n/a"}</div>
-              <div>Reprojection RMSE (px): {typeof validationResult?.metrics?.reprojection_error_px?.rmse === "number" ? validationResult.metrics.reprojection_error_px.rmse.toFixed(2) : "n/a"}</div>
-              <div>Reprojection max (px): {typeof validationResult?.metrics?.reprojection_error_px?.max === "number" ? validationResult.metrics.reprojection_error_px.max.toFixed(2) : "n/a"}</div>
-            </div>
-          </div>
-          {validationResult?.details?.length ? (
-            <pre className="max-h-48 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-300">
-              {JSON.stringify(validationResult.details.slice(0, 20), null, 2)}
-            </pre>
-          ) : null}
-        </section>
+        <ZMappingStepSection
+          data={{
+            zReadiness: getStageReadiness("z-mapping"),
+            snapshotDataUrl,
+            correspondences,
+            zMappings,
+            imagePickMode,
+            pendingZGroundIndex,
+            pendingZImageTip,
+            snapshotNaturalSize,
+            segments,
+            stageResolvedGroundPlane: stageResolvedOutputs["ground-plane"],
+            stageOutputGroundPlane: stageOutputs["ground-plane"],
+            stageOutputZMapping: stageOutputs["z-mapping"],
+            jobLoading,
+            sequenceRunning,
+          }}
+          actions={{
+            beginZPointCapture,
+            setGroundPickMode,
+            onZGroundMarkerClick,
+            onSnapshotPick,
+            handleCadPick,
+            undoZMapping,
+            clearZMappings,
+            deleteZMapping,
+            setStageOutput,
+            runStageCard,
+          }}
+          renderStageStatus={renderStageStatus}
+        />
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
-          <h2 className="text-xl font-semibold">Step 3: z-mapping</h2>
-          <p className={`text-xs ${getStageReadiness("z-mapping").enabled ? "text-emerald-300" : "text-amber-300"}`}>
-            {getStageReadiness("z-mapping").status}
-          </p>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3">
-              <p className="text-xs text-zinc-400">Preview includes previous ground-plane mapping + Z direction preview lines.</p>
-              {snapshotDataUrl ? (
-                <div className="rounded border border-zinc-700 p-2 text-xs text-zinc-300">
-                  Ground pairs: {correspondences.length} | Z pairs: {zMappings.length}
-                </div>
-              ) : (
-                <div className="rounded border border-zinc-700 p-2 text-xs text-zinc-400">Capture snapshot in Step 2 for Z preview.</div>
-              )}
-              <div className="grid gap-2 sm:grid-cols-2">
-                <label className="text-xs">Base Ground Pair
-                  <select value={selectedGroundPairIndex} onChange={(e) => setSelectedGroundPairIndex(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1">
-                    {correspondences.map((_, idx) => (
-                      <option key={idx} value={idx}>Ground #{idx + 1}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-xs">Z Offset (m)
-                  <input type="number" step="0.1" value={zOffsetMeters} onChange={(e) => setZOffsetMeters(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-                </label>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={beginZPointCapture} className="rounded border border-blue-700 bg-blue-900/40 px-3 py-2 text-sm hover:bg-blue-800/50">Add Z-Direction Point (Image)</button>
-                <button onClick={undoZMapping} className="rounded border border-zinc-600 px-3 py-2 text-sm hover:bg-zinc-800">Undo Z</button>
-                <button onClick={clearZMappings} className="rounded border border-zinc-600 px-3 py-2 text-sm hover:bg-zinc-800">Clear Z</button>
-              </div>
-              {snapshotDataUrl ? (
-                <div className="rounded border border-zinc-700">
-                  <div className="relative w-full">
-                    <img src={snapshotDataUrl} alt="Z mapping preview" className="w-full max-h-[320px] rounded bg-black object-contain" />
-                    <svg
-                      onClick={onSnapshotPick}
-                      className="absolute inset-0 h-full w-full cursor-crosshair"
-                      viewBox={`0 0 ${snapshotNaturalSize.width} ${snapshotNaturalSize.height}`}
-                      preserveAspectRatio="none"
-                    >
-                      {correspondences.map((p, idx) => (
-                        <g key={`zg-base-${idx}`}>
-                          <circle cx={p.pixel[0]} cy={p.pixel[1]} r="7" fill="#22c55e" />
-                          <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#22c55e" fontSize="14" fontWeight="700">{idx + 1}</text>
-                        </g>
-                      ))}
-                      {zMappings.map((z, idx) => (
-                        <g key={`zg-z-${idx}`}>
-                          <line x1={z.pixelBase[0]} y1={z.pixelBase[1]} x2={z.pixelZ[0]} y2={z.pixelZ[1]} stroke="#60a5fa" strokeWidth="2" />
-                          <circle cx={z.pixelZ[0]} cy={z.pixelZ[1]} r="7" fill="#2563eb" />
-                          <text x={z.pixelZ[0] + 10} y={z.pixelZ[1] - 10} fill="#93c5fd" fontSize="14" fontWeight="700">Z{idx + 1}</text>
-                        </g>
-                      ))}
-                      {pendingZGroundIndex !== null && correspondences[pendingZGroundIndex] ? (
-                        <g>
-                          <circle cx={correspondences[pendingZGroundIndex].pixel[0]} cy={correspondences[pendingZGroundIndex].pixel[1]} r="8" fill="none" stroke="#f59e0b" strokeWidth="2" />
-                          <text x={correspondences[pendingZGroundIndex].pixel[0] + 10} y={correspondences[pendingZGroundIndex].pixel[1] - 10} fill="#f59e0b" fontSize="12" fontWeight="700">Base</text>
-                        </g>
-                      ) : null}
-                    </svg>
-                  </div>
-                </div>
-              ) : null}
-              <div className="max-h-40 overflow-auto rounded border border-zinc-700 p-2 text-xs space-y-1">
-                {zMappings.map((z, idx) => (
-                  <div key={idx} className="flex items-center justify-between gap-2">
-                    <span>Z#{idx + 1}: Base#{z.baseIndex + 1} Wz[{z.worldZ.map((v) => Number(v).toFixed(2)).join(",")}] → Pz[{z.pixelZ.map((v) => Number(v).toFixed(1)).join(",")}]</span>
-                    <button onClick={() => deleteZMapping(idx)} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Delete</button>
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-zinc-400 break-all">Ground output: {stageResolvedOutputs["ground-plane"] || stageOutputs["ground-plane"]}</p>
-            </div>
-            <div className="space-y-2">
-              <label className="block text-xs">Z-Mapping Output Path
-                <input value={stageOutputs["z-mapping"] || ""} onChange={(e) => setStageOutput("z-mapping", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-              </label>
-              <button
-                disabled={jobLoading || sequenceRunning || !getStageReadiness("z-mapping").enabled}
-                onClick={() => runStageCard("z-mapping")}
-                className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
-              >
-                Run z-mapping Stage
-              </button>
-              {renderStageStatus("z-mapping")}
-            </div>
-          </div>
-        </section>
+        <Cad3dStepSection
+          data={{
+            cadReadiness: getStageReadiness("cad-3d-dwg"),
+            correspondences,
+            zMappings,
+            segments,
+            stageOutputCad: stageOutputs["cad-3d-dwg"],
+            jobLoading,
+            sequenceRunning,
+          }}
+          actions={{
+            setStageOutput,
+            runStageCard,
+          }}
+          renderStageStatus={renderStageStatus}
+        />
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
-          <h2 className="text-xl font-semibold">Step 4: cad-3d-dwg</h2>
-          <p className={`text-xs ${getStageReadiness("cad-3d-dwg").enabled ? "text-emerald-300" : "text-amber-300"}`}>
-            {getStageReadiness("cad-3d-dwg").status}
-          </p>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-3">
-              <p className="text-xs text-zinc-400">Using uploaded CAD with highlighted Ground points + Z-direction points from previous steps.</p>
-              <p className="text-xs text-zinc-300">Ground points: {correspondences.length} | Z points: {zMappings.length}</p>
-            </div>
-            <div className="space-y-3">
-              <ProjectedCadViewer
-                segments={segments}
-                pickedWorldPoints={[
-                  ...correspondences.map((c) => c.world),
-                  ...zMappings.map((z) => z.worldZ),
-                ]}
-                title="CAD with ground-plane + Z-direction highlights"
-              />
-              <label className="block text-xs">CAD-3D-DWG Output Path
-                <input value={stageOutputs["cad-3d-dwg"] || ""} onChange={(e) => setStageOutput("cad-3d-dwg", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-              </label>
-              <button
-                disabled={jobLoading || sequenceRunning || !getStageReadiness("cad-3d-dwg").enabled}
-                onClick={() => runStageCard("cad-3d-dwg")}
-                className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
-              >
-                Run cad-3d-dwg Stage
-              </button>
-              {renderStageStatus("cad-3d-dwg")}
-            </div>
-          </div>
-        </section>
+        <RemainingStagesSection
+          data={{
+            stages: STAGES,
+            stageOutputs,
+            stageMessages,
+            jobLoading,
+            sequenceRunning,
+            sfmMessage,
+            overlayOpacity,
+          }}
+          actions={{
+            getStageReadiness,
+            uploadSfmImages,
+            setOverlayOpacity,
+            setStageOutput,
+            runStageCard,
+          }}
+          refs={{ sfmInputRef }}
+          renderStageStatus={renderStageStatus}
+        />
 
-        {STAGES.filter((s) => !["intrinsic", "ground-plane", "z-mapping", "cad-3d-dwg"].includes(s)).map((stage, idx) => (
-          <section key={stage} className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
-            <h2 className="text-xl font-semibold">Step {idx + 5}: {stage}</h2>
-            <p className={`text-xs ${getStageReadiness(stage).enabled ? "text-emerald-300" : "text-amber-300"}`}>
-              {getStageReadiness(stage).status}
-            </p>
-            {stage === "sfm" ? (
-              <div className="space-y-2">
-                <input
-                  ref={sfmInputRef}
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={(e) => uploadSfmImages(e.target.files)}
-                  className="hidden"
-                />
-                <button onClick={() => sfmInputRef.current?.click()} className="rounded border border-violet-700 bg-violet-900/40 px-3 py-2 text-sm hover:bg-violet-800/50">
-                  Upload SfM Images
-                </button>
-                <p className="text-xs text-zinc-400">{sfmMessage}</p>
-              </div>
-            ) : null}
-            {stage === "overlay" ? (
-              <label className="block text-sm">
-                Overlay Opacity: {overlayOpacity}%
-                <input type="range" min={0} max={100} value={overlayOpacity} onChange={(e) => setOverlayOpacity(Number(e.target.value))} className="w-full" />
-              </label>
-            ) : null}
-            <label className="block text-xs">Output Path
-              <input value={stageOutputs[stage] || ""} onChange={(e) => setStageOutput(stage, e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
-            </label>
-            <button
-              disabled={jobLoading || sequenceRunning || !getStageReadiness(stage).enabled}
-              onClick={() => runStageCard(stage)}
-              className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm capitalize hover:bg-cyan-800/50 disabled:opacity-40"
-            >
-              Run {stage} Stage
-            </button>
-            <p className="text-xs text-zinc-300">{stageMessages[stage] || "Ready"}</p>
-            {renderStageStatus(stage)}
-          </section>
-        ))}
+        <LiveValidationSection
+          data={{
+            latestCalibrationYamlPath,
+            validationStatus,
+            validationPairs,
+            validationResult,
+          }}
+          actions={{
+            setLatestCalibrationYamlPath,
+            runLiveValidation,
+            clearValidationPairs,
+          }}
+        />
 
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-          <h2 className="mb-2 text-lg font-medium">Current Job</h2>
-          {!currentJob ? (
-            <p className="text-sm text-zinc-400">No stage started yet.</p>
-          ) : (
-            <div className="space-y-2 text-sm">
-              <div className="flex flex-wrap gap-4">
-                <span>ID: {currentJob.id}</span>
-                <span>Stage: {currentJob.stage}</span>
-                <span>Status: {currentJob.status}</span>
-                <span>Progress: {currentJob.progress}%</span>
-              </div>
-              <div className="h-2 rounded bg-zinc-800">
-                <div className="h-2 rounded bg-cyan-500" style={{ width: `${currentJob.progress}%` }} />
-              </div>
-              <pre className="max-h-52 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
-                {JSON.stringify(currentJob, null, 2)}
-              </pre>
-            </div>
-          )}
-        </section>
+        <CurrentJobSection currentJob={currentJob} />
       </main>
     </div>
   );
+}
+
+export default function Home() {
+  return <ProjectEntryPage />;
 }

@@ -6,7 +6,6 @@ import time
 
 import cv2
 import numpy as np
-import yaml
 
 from camera_source import CameraSource
 from cad_dwg import (
@@ -21,6 +20,7 @@ from intrinsic import (
     parse_checkerboard,
     save_intrinsics,
 )
+from web_backend_services import WebCalibrationBackend
 
 
 def capture_reference_frame(source):
@@ -250,66 +250,43 @@ def collect_correspondences_3d(ref_frame, segments3d, vertices3d):
     return object_arr, image_arr
 
 
-def compute_pose_pnp(object_points_xyz, image_points, K, D):
-    """Estimate camera pose from 3D-2D correspondences and compute reprojection RMSE."""
-    ok, rvec, tvec, inliers = cv2.solvePnPRansac(
-        object_points_xyz,
-        image_points,
-        K,
-        D,
-        flags=cv2.SOLVEPNP_ITERATIVE,
-        reprojectionError=4.0,
-        confidence=0.99,
+def solve_and_save_calibration_with_backend(
+    backend: WebCalibrationBackend,
+    object_points_xyz,
+    image_points_uv,
+    K,
+    D,
+    output_yaml,
+    dwg_path,
+    source,
+    intrinsic_rms,
+):
+    """Solve and persist calibration through class-based backend service.
+
+    This keeps desktop and web/headless calibration payload generation consistent by
+    routing both through the same reusable backend class implementation.
+    """
+    result = backend.solve_pnp_from_arrays(
+        object_points_xyz=object_points_xyz,
+        image_points_uv=image_points_uv,
+        K=K,
+        D=D,
+        output_yaml=output_yaml,
+        mode="cad_3d_pnp",
+        source=source,
+        dwg_path=dwg_path,
+        intrinsic_rms=intrinsic_rms,
     )
 
-    if not ok:
-        ok, rvec, tvec = cv2.solvePnP(
-            object_points_xyz,
-            image_points,
-            K,
-            D,
-            flags=cv2.SOLVEPNP_ITERATIVE,
-        )
-        inliers = None
-        if not ok:
-            raise RuntimeError("solvePnP failed")
+    pose = result.get("pose") or {}
+    if "rvec" not in pose or "tvec" not in pose:
+        raise RuntimeError("Backend solve result is missing pose vectors")
 
-    projected, _ = cv2.projectPoints(object_points_xyz, rvec, tvec, K, D)
-    projected = projected.reshape(-1, 2)
-    err = np.linalg.norm(projected - image_points, axis=1)
-    rmse = float(np.sqrt(np.mean(np.square(err))))
-
-    inlier_count = int(len(inliers)) if inliers is not None else int(len(object_points_xyz))
-    return rvec, tvec, rmse, inlier_count
-
-
-def save_calibration(output_yaml, dwg_path, K, D, rvec, tvec, rmse, inliers, object_points, image_points):
-    """Write solved calibration state and correspondences to YAML."""
-    data = {
-        "timestamp": int(time.time()),
-        "dwg_path": os.path.abspath(dwg_path),
-        "mode": "cad_3d_pnp",
-        "intrinsic": {
-            "K": K.tolist(),
-            "D": D.tolist(),
-        },
-        "pose": {
-            "rvec": rvec.reshape(-1).tolist(),
-            "tvec": tvec.reshape(-1).tolist(),
-            "reproj_rmse_px": rmse,
-            "inliers": inliers,
-        },
-        "correspondences": [
-            {
-                "world": [float(w[0]), float(w[1]), float(w[2])],
-                "pixel": [float(p[0]), float(p[1])],
-            }
-            for w, p in zip(object_points, image_points)
-        ],
-    }
-
-    with open(output_yaml, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+    rvec = np.array(pose["rvec"], dtype=np.float64).reshape(3, 1)
+    tvec = np.array(pose["tvec"], dtype=np.float64).reshape(3, 1)
+    rmse = float(pose.get("reproj_rmse_px", 0.0))
+    inliers = int(pose.get("inliers", len(object_points_xyz)))
+    return rvec, tvec, rmse, inliers
 
 
 def build_projected_segments_3d(segments3d, rvec, tvec, K, D):
@@ -465,6 +442,7 @@ def main():
     calibration_yaml = os.path.join(args.output_dir, "calibration2.yaml")
 
     source = CameraSource(args.source)
+    backend = WebCalibrationBackend()
 
     try:
         if os.path.exists(intrinsics_path) and not args.force_intrinsic:
@@ -487,21 +465,18 @@ def main():
         ref = capture_reference_frame(source)
         object_pts, img_pts = collect_correspondences_3d(ref, segments3d, vertices3d)
 
-        rvec, tvec, rmse, inliers = compute_pose_pnp(object_pts, img_pts, K, D)
-        print(f"[PnP] RMSE={rmse:.4f}px | inliers={inliers}/{len(object_pts)}")
-
-        save_calibration(
-            calibration_yaml,
-            args.dwg,
-            K,
-            D,
-            rvec,
-            tvec,
-            rmse,
-            inliers,
-            object_pts,
-            img_pts,
+        rvec, tvec, rmse, inliers = solve_and_save_calibration_with_backend(
+            backend=backend,
+            object_points_xyz=object_pts,
+            image_points_uv=img_pts,
+            K=K,
+            D=D,
+            output_yaml=calibration_yaml,
+            dwg_path=args.dwg,
+            source=args.source,
+            intrinsic_rms=rms,
         )
+        print(f"[PnP] RMSE={rmse:.4f}px | inliers={inliers}/{len(object_pts)}")
 
         print(f"[Calibration2] Saved: {calibration_yaml}")
 

@@ -79,6 +79,7 @@ If your machine is slower, add:
 - `cad_dwg.py`: DWG/DXF geometry loading, 3D preview rendering, nearest-vertex snapping.
 - `camera_source.py`: camera/file stream abstraction.
 - `web_backend.py`: headless Python commands used by web APIs.
+- `web_backend_services/`: class-based backend modules split by responsibility (`SnapshotService`, `PnPCalibrationService`, `IntrinsicCalibrationService`, `MappingValidationService`, `MultiViewTriangulationService`, `WebCalibrationBackend`).
 - `calibration2-web/`: Next.js UI + API layer for browser workflows.
 
 ## End-to-end pipeline (interactive desktop)
@@ -225,10 +226,93 @@ The web module provides:
 - intrinsic sample capture and solve,
 - headless PnP solve from correspondences,
 - live validation of pixel↔world mapping using known test points,
+- project create/save/open for multi-camera calibration projects (no manual JSON authoring required),
+- per-camera sequential solve pipeline across all project cameras,
+- shared marker reuse between cameras,
+- multi-view triangulation from shared marker observations,
+- auto feature-based marker generation for triangulation (LoFTR deep matcher, with ORB fallback),
 - checkerboard PDF generation,
 - DWG/DXF upload preview,
 - one-click sequential execution of all calibration stages (combined sequence),
 - SfM stage with COLMAP.
+
+## Multi-camera project config (web)
+
+You can create a project JSON directly from the web dashboard, save progress, and reopen later to continue from where you stopped.
+
+Project rules in web mode:
+
+- one shared DWG/DXF path is used as source of truth across all cameras,
+- project metadata (name + description) is stored,
+- per-camera calibration workspace state is stored for resume (snapshots, correspondences, stage outputs, etc).
+
+You can still upload an existing project JSON for compatibility.
+
+Example:
+
+```json
+{
+   "projectName": "warehouse-zone-a",
+   "projectDescription": "Zone A entrance and loading bay calibration",
+   "sharedDwgPath": "/path/to/zone_a_shared.dwg",
+   "sharedDwgFileName": "zone_a_shared.dwg",
+   "cameras": [
+      {
+         "id": "cam-gate",
+         "name": "Gate Camera",
+         "location": "Gate",
+         "cameraType": "cctv",
+         "sourceMode": "rtsp",
+         "sourceUrl": "rtsp://<camera-1>",
+         "intrinsicsPath": "/path/to/cam_gate_intrinsics.npz",
+         "checkerboard": "9x6",
+         "squareSize": 0.024,
+         "minSamples": 18
+      },
+      {
+         "id": "cam-loading",
+         "name": "Loading Bay Camera",
+         "location": "Loading Bay",
+         "cameraType": "cctv",
+         "sourceMode": "rtsp",
+         "sourceUrl": "rtsp://<camera-2>",
+         "intrinsicsPath": "/path/to/cam_loading_intrinsics.npz"
+      }
+   ],
+   "sharedMarkers": [
+      {
+         "id": "m1",
+         "world": [0.0, 0.0, 0.0],
+         "observations": {
+            "cam-gate": [812.0, 515.0]
+         }
+      }
+   ],
+   "cameraWorkspaces": {
+      "cam-gate": {
+         "snapshotPath": "/path/to/snapshots/cam-gate.jpg",
+         "latestCalibrationYamlPath": "/path/to/calibration/cam-gate.yaml"
+      }
+   }
+}
+```
+
+Recommended sequence:
+
+1. Use `/project` page to create project or open existing one.
+2. Open `/project/<projectId>` to view camera list and per-camera DONE/FAIL status.
+3. Click `Go to calibration` for a camera (`/project/<projectId>/camera/<cameraId>`).
+4. Complete stages for that camera, then use `Go back to list of cameras` or `Go to next camera`.
+5. Save current camera progress from calibration page when needed.
+6. Continue remaining cameras until all statuses are green.
+7. Run multi-view triangulation (or enable auto triangulation in project sequence).
+   - If shared markers are empty but snapshots are available for solved cameras, triangulation can auto-match features across views.
+
+Optional deep-matching dependencies (for best auto-match quality):
+
+```bash
+python3 -m pip install torch kornia
+```
 
 ## Accuracy recommendations
 
@@ -259,6 +343,7 @@ The web module provides:
 - **`ezdxf` missing**: install with `pip install ezdxf`.
 - **PDF generation fails**: install `reportlab` and ensure board size fits A3 margins.
 - **SfM fails**: confirm `colmap` is installed and at least 4 valid images are uploaded.
+- **Deep auto-matching unavailable**: install `torch` + `kornia` for LoFTR; otherwise ORB fallback is used.
 
 ## Vision
 

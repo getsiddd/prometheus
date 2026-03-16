@@ -1,0 +1,7 @@
+numpy==2.4.3
+opencv-python==4.13.0.92
+PyYAML==6.0.3
+ezdxf==1.4.3
+reportlab==4.4.10
+torch==2.10.0
+kornia==0.8.2

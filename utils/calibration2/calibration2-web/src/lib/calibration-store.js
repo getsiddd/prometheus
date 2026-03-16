@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { parseLastJson, runPython } from "@/lib/server/pythonRunner";
+
 const globalState = globalThis;
 
 if (!globalState.__calibrationJobs) {
@@ -89,6 +91,130 @@ function writeWebModeOutput(stage, config, jobId) {
 
   fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf-8");
   return outputPath;
+}
+
+function listImageFiles(dirPath) {
+  if (!dirPath || !fs.existsSync(dirPath)) {
+    return [];
+  }
+  return fs.readdirSync(dirPath).filter((name) => /\.(jpg|jpeg|png|bmp)$/i.test(name));
+}
+
+async function runIntrinsicWebSolve(id, stage, config) {
+  const outputPath = resolveStageOutputPath(stage, config, id);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+  const sessionId = String(config?.intrinsicSessionId || config?.sessionId || "default").trim() || "default";
+  const imagesDir = path.resolve(process.cwd(), "uploads", "intrinsic", sessionId);
+  const imageFiles = listImageFiles(imagesDir);
+
+  if (!fs.existsSync(imagesDir)) {
+    throw new Error(`Intrinsic session folder not found: ${imagesDir}`);
+  }
+  if (imageFiles.length < 4) {
+    throw new Error(`Need at least 4 valid checkerboard images in session '${sessionId}', found ${imageFiles.length}`);
+  }
+
+  const outputNpzDir = path.resolve(process.cwd(), "uploads", "intrinsic-results");
+  fs.mkdirSync(outputNpzDir, { recursive: true });
+  const outputNpz = path.join(outputNpzDir, `${Date.now()}-intrinsics.npz`);
+
+  const scriptPath = path.resolve(process.cwd(), "..", "web_backend.py");
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`web_backend.py not found: ${scriptPath}`);
+  }
+
+  const latest = jobs.get(id);
+  updateJob(id, {
+    status: "running",
+    progress: 30,
+    logs: [
+      ...(latest?.logs || []),
+      `Web mode intrinsic solve started for session '${sessionId}'.`,
+      `Input samples: ${imageFiles.length}`,
+      `Intrinsic output target: ${outputNpz}`,
+      `Stage output target: ${outputPath}`,
+    ],
+    result: {
+      ...(latest?.result || {}),
+      ok: true,
+      stage,
+      mode: "web-intrinsic-solve",
+      outputPath,
+      sessionId,
+      sampleCount: imageFiles.length,
+    },
+  });
+
+  const solved = await runPython([
+    scriptPath,
+    "intrinsic-solve",
+    "--images-dir",
+    imagesDir,
+    "--checkerboard",
+    String(config?.checkerboard || "9x6"),
+    "--square-size",
+    String(config?.squareSize ?? 0.024),
+    "--output-npz",
+    outputNpz,
+  ]);
+
+  const parsed = parseLastJson(solved.out) || {};
+  const result = parsed?.result || parsed || {};
+  const K = Array.isArray(result?.K) ? result.K : null;
+  const D = Array.isArray(result?.D) ? result.D : null;
+
+  const payload = {
+    ok: true,
+    mode: "web-intrinsic-solve",
+    stage,
+    generatedAt: new Date().toISOString(),
+    params: {
+      cameraType: config?.cameraType,
+      sourceMode: config?.sourceMode,
+      sourceUrl: config?.sourceUrl,
+      checkerboard: config?.checkerboard,
+      squareSize: config?.squareSize,
+      minSamples: config?.minSamples,
+      options: config?.options || {},
+      sessionId,
+    },
+    input: {
+      imagesDir,
+      sampleCount: imageFiles.length,
+    },
+    output: {
+      intrinsicsPath: outputNpz,
+      rms: typeof result?.rms === "number" ? result.rms : null,
+      validImageCount: Number.isFinite(result?.valid_image_count) ? result.valid_image_count : imageFiles.length,
+      fx: typeof K?.[0]?.[0] === "number" ? K[0][0] : null,
+      fy: typeof K?.[1]?.[1] === "number" ? K[1][1] : null,
+      cx: typeof K?.[0]?.[2] === "number" ? K[0][2] : null,
+      cy: typeof K?.[1]?.[2] === "number" ? K[1][2] : null,
+      K,
+      D,
+    },
+    backendResult: parsed,
+  };
+
+  fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf-8");
+
+  const done = jobs.get(id);
+  updateJob(id, {
+    status: "completed",
+    progress: 100,
+    logs: [...(done?.logs || []), "Web intrinsic solve completed."],
+    result: {
+      ...(done?.result || {}),
+      ok: true,
+      stage,
+      mode: "web-intrinsic-solve",
+      outputPath,
+      intrinsicsPath: outputNpz,
+      intrinsic: payload.output,
+      backendResult: parsed,
+    },
+  });
 }
 
 function runProcessLogged(id, command, args, options = {}) {
@@ -277,6 +403,26 @@ function launchCalibrationProcess(id, stage, config) {
               ...(latest?.result || {}),
               ok: false,
               stage,
+              error: msg,
+            },
+          });
+        });
+        return;
+      }
+
+      if (stage === "intrinsic") {
+        runIntrinsicWebSolve(id, stage, config).catch((error) => {
+          const latest = jobs.get(id);
+          const msg = error instanceof Error ? error.message : String(error);
+          updateJob(id, {
+            status: "failed",
+            progress: 100,
+            logs: [...(latest?.logs || []), `Intrinsic web solve failed: ${msg}`],
+            result: {
+              ...(latest?.result || {}),
+              ok: false,
+              stage,
+              mode: "web-intrinsic-solve",
               error: msg,
             },
           });

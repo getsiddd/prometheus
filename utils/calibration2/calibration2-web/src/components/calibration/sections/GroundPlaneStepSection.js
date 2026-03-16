@@ -225,12 +225,6 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
       ))}
     </svg>
   ) : null;
-            {imagePickMode === "validation" ? "V" : imagePickMode === "shared-marker" ? "S" : "P"}
-          </text>
-        </g>
-      ) : null}
-    </svg>
-  );
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">

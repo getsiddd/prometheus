@@ -2482,31 +2482,69 @@ export function CalibrationConsole({
 
   const liveFeedSrc = `/api/feeds/mjpeg?source=${encodeURIComponent(sourceUrl || "")}&fps=${feedFps}&width=${feedWidth}&nonce=${feedNonce}`;
 
+  async function saveSnapshotDataUrl(imageDataUrl, label = "") {
+    const saveRes = await fetch("/api/calibration/web/snapshot-upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageDataUrl }),
+    });
+    const saveData = await readJsonResponseSafe(saveRes);
+    if (!saveRes.ok) {
+      throw new Error(saveData?.error || "Snapshot save failed");
+    }
+    const capturedUrl = saveData?.snapshotDataUrl || imageDataUrl;
+    setSnapshotDataUrl(capturedUrl);
+    setSnapshotPath(saveData?.outputPath || "");
+    setSnapshotStatus(
+      label
+        ? `Reference frame captured (${label}): ${saveData?.outputPath || "saved"}`
+        : `Reference frame captured: ${saveData?.outputPath || "saved"}`
+    );
+    setAutoGroundSuggestions([]);
+    setAutoGroundDetections([]);
+    setAutoGroundModelInfo(null);
+    setAutoGroundLogs([]);
+    setAutoGroundImageSize({ width: 1, height: 1 });
+    setPendingAutoGroundIndex(null);
+    setAutoGroundStatus("Reference frame ready. Auto ground prep will continue in background.");
+    return capturedUrl;
+  }
+
+  function captureRtspFrameFromLiveFeedElement() {
+    const img = liveFeedImgRef.current;
+    if (!img) {
+      return "";
+    }
+    const width = Number(img.naturalWidth || img.width || 0);
+    const height = Number(img.naturalHeight || img.height || 0);
+    if (width < 2 || height < 2) {
+      return "";
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return "";
+    }
+    try {
+      ctx.drawImage(img, 0, 0, width, height);
+      return canvas.toDataURL("image/jpeg", 0.92);
+    } catch {
+      return "";
+    }
+  }
+
   async function captureSnapshotWeb() {
     try {
       if (sourceMode === "webcam") {
         const imageDataUrl = captureWebcamFrame();
-        const saveRes = await fetch("/api/calibration/web/snapshot-upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageDataUrl }),
-        });
-        const saveData = await readJsonResponseSafe(saveRes);
-        if (!saveRes.ok) {
-          throw new Error(saveData?.error || "Webcam snapshot save failed");
-        }
-        const capturedWebcamUrl = saveData.snapshotDataUrl || imageDataUrl;
-        setSnapshotDataUrl(capturedWebcamUrl);
-        setSnapshotPath(saveData.outputPath || "");
-        setSnapshotStatus(`Reference frame captured (webcam): ${saveData.outputPath}`);
-        setAutoGroundSuggestions([]);
-        setAutoGroundDetections([]);
-        setAutoGroundModelInfo(null);
-        setAutoGroundLogs([]);
-        setAutoGroundImageSize({ width: 1, height: 1 });
-        setPendingAutoGroundIndex(null);
-        setAutoGroundStatus("Reference frame ready. Auto ground prep will continue in background.");
-        return capturedWebcamUrl;
+        return await saveSnapshotDataUrl(imageDataUrl, "webcam");
+      }
+
+      const liveImageDataUrl = captureRtspFrameFromLiveFeedElement();
+      if (liveImageDataUrl) {
+        return await saveSnapshotDataUrl(liveImageDataUrl, "live feed");
       }
 
       const res = await fetch("/api/calibration/web/snapshot", {

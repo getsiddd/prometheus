@@ -11,6 +11,7 @@ export default function ProjectWorkflowSection({ data, actions, refs }) {
     projectDraftName,
     projectDraftDescription,
     projectDraftSharedDwgPath,
+    projectDraftOptions,
     projectDraftCameras,
     projectConfigPath,
     projectCameras,
@@ -29,6 +30,7 @@ export default function ProjectWorkflowSection({ data, actions, refs }) {
     setProjectOpenPath,
     setProjectDraftName,
     setProjectDraftDescription,
+    setProjectDraftOptions,
     addProjectDraftCamera,
     updateProjectDraftCamera,
     removeProjectDraftCamera,
@@ -108,6 +110,41 @@ export default function ProjectWorkflowSection({ data, actions, refs }) {
               {projectDraftSharedDwgPath || "No shared DWG uploaded yet."}
             </div>
           </label>
+          <div className="rounded border border-zinc-800 bg-zinc-950/50 p-2 space-y-1">
+            <div className="text-xs font-medium text-zinc-200">Calibration Features</div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={Boolean(projectDraftOptions?.useGroundPlane)}
+                onChange={(e) => setProjectDraftOptions((prev) => ({ ...(prev || {}), useGroundPlane: e.target.checked }))}
+              />
+              Ground Plane Mapping
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={Boolean(projectDraftOptions?.useZDirection)}
+                onChange={(e) => setProjectDraftOptions((prev) => ({ ...(prev || {}), useZDirection: e.target.checked }))}
+              />
+              Z Direction Mapping
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={Boolean(projectDraftOptions?.useSfm)}
+                onChange={(e) => setProjectDraftOptions((prev) => ({ ...(prev || {}), useSfm: e.target.checked }))}
+              />
+              Structure from Motion
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={Boolean(projectDraftOptions?.useRealtimeOverlay)}
+                onChange={(e) => setProjectDraftOptions((prev) => ({ ...(prev || {}), useRealtimeOverlay: e.target.checked }))}
+              />
+              CCTV ↔ 3D DWG Overlay
+            </label>
+          </div>
           <div className="text-[11px] text-zinc-500">
             Current project DWG: {projectSharedDwgPath || "n/a"}
           </div>

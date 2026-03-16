@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { readProjectById } from "@/lib/server/projectStore";
 
-const STAGES = [
+const ALL_STAGES = [
   "intrinsic",
   "ground-plane",
   "z-mapping",
@@ -11,23 +11,34 @@ const STAGES = [
   "overlay",
 ];
 
-function summarizeCameraStatus(camera, workspace) {
+function resolveEnabledStages(projectConfig) {
+  const opts = projectConfig?.options || {};
+  return ALL_STAGES.filter((stage) => {
+    if (stage === "ground-plane") return opts.useGroundPlane !== false;
+    if (stage === "z-mapping") return opts.useZDirection !== false;
+    if (stage === "sfm") return opts.useSfm !== false;
+    if (stage === "cad-3d-dwg" || stage === "overlay") return opts.useRealtimeOverlay !== false;
+    return true; // intrinsic + extrinsic always enabled
+  });
+}
+
+function summarizeCameraStatus(camera, workspace, enabledStages) {
   const completedStages =
     workspace && typeof workspace.completedStages === "object" && workspace.completedStages
       ? workspace.completedStages
       : {};
 
-  const doneStages = STAGES.filter((stage) => Boolean(completedStages[stage])).length;
+  const doneStages = enabledStages.filter((stage) => Boolean(completedStages[stage])).length;
   const calibrationDone = Boolean(workspace?.latestCalibrationYamlPath);
   const validationDone = Array.isArray(workspace?.validationPairs) && workspace.validationPairs.length > 0;
-  const allStagesDone = doneStages === STAGES.length;
+  const allStagesDone = doneStages === enabledStages.length;
   const allDone = allStagesDone && calibrationDone && validationDone;
 
   return {
     cameraId: camera.id,
     cameraName: camera.name || camera.id,
     doneStages,
-    totalStages: STAGES.length,
+    totalStages: enabledStages.length,
     calibrationDone,
     validationDone,
     allDone,
@@ -62,6 +73,9 @@ export default async function ProjectDetailPage({ params }) {
       ? projectConfig.cameraWorkspaces
       : {};
 
+  const enabledStages = resolveEnabledStages(projectConfig);
+  const opts = projectConfig?.options || {};
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <main className="mx-auto max-w-7xl space-y-6 px-6 py-8">
@@ -78,6 +92,12 @@ export default async function ProjectDetailPage({ params }) {
             </Link>
           </div>
           <p className="text-xs text-zinc-500 break-all">Shared DWG: {projectConfig.sharedDwgPath || "Not set"}</p>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <span className={`rounded px-2 py-0.5 ${opts.useGroundPlane !== false ? "bg-emerald-900/40 text-emerald-200" : "bg-zinc-800/60 text-zinc-500 line-through"}`}>Ground Plane</span>
+            <span className={`rounded px-2 py-0.5 ${opts.useZDirection !== false ? "bg-emerald-900/40 text-emerald-200" : "bg-zinc-800/60 text-zinc-500 line-through"}`}>Z Direction</span>
+            <span className={`rounded px-2 py-0.5 ${opts.useSfm !== false ? "bg-emerald-900/40 text-emerald-200" : "bg-zinc-800/60 text-zinc-500 line-through"}`}>SfM</span>
+            <span className={`rounded px-2 py-0.5 ${opts.useRealtimeOverlay !== false ? "bg-emerald-900/40 text-emerald-200" : "bg-zinc-800/60 text-zinc-500 line-through"}`}>Overlay</span>
+          </div>
         </section>
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
@@ -87,7 +107,7 @@ export default async function ProjectDetailPage({ params }) {
           ) : (
             <div className="space-y-2">
               {cameras.map((camera) => {
-                const status = summarizeCameraStatus(camera, workspaces[camera.id]);
+                const status = summarizeCameraStatus(camera, workspaces[camera.id], enabledStages);
                 return (
                   <div key={camera.id} className="rounded border border-zinc-800 bg-zinc-950/60 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -107,7 +127,7 @@ export default async function ProjectDetailPage({ params }) {
                               : "border border-rose-700 bg-rose-900/40 text-rose-200"
                           }`}
                         >
-                          {status.allDone ? "DONE" : "FAIL"}
+                          {status.allDone ? "DONE" : "PENDING"}
                         </span>
                         <Link
                           href={`/project/${encodeURIComponent(projectId)}/camera/${encodeURIComponent(camera.id)}`}

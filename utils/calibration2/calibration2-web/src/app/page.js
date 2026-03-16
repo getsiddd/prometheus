@@ -26,6 +26,38 @@ const STAGES = [
 
 const PROJECT_CALIBRATION_STAGES = [...STAGES];
 
+const DEFAULT_PROJECT_OPTIONS = {
+  useGroundPlane: true,
+  useZDirection: true,
+  useSfm: true,
+  useRealtimeOverlay: true,
+};
+
+function normalizeProjectOptions(options) {
+  if (!options || typeof options !== "object") {
+    return { ...DEFAULT_PROJECT_OPTIONS };
+  }
+  return {
+    useGroundPlane: options.useGroundPlane !== false,
+    useZDirection: options.useZDirection !== false,
+    useSfm: options.useSfm !== false,
+    useRealtimeOverlay: options.useRealtimeOverlay !== false,
+  };
+}
+
+function getEnabledStageSet(options) {
+  const normalized = normalizeProjectOptions(options);
+  return new Set([
+    "intrinsic",
+    ...(normalized.useGroundPlane ? ["ground-plane"] : []),
+    ...(normalized.useZDirection ? ["z-mapping"] : []),
+    ...(normalized.useRealtimeOverlay ? ["cad-3d-dwg"] : []),
+    "extrinsic",
+    ...(normalized.useSfm ? ["sfm"] : []),
+    ...(normalized.useRealtimeOverlay ? ["overlay"] : []),
+  ]);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -44,6 +76,17 @@ export function CalibrationConsole({
   const [useZDirection, setUseZDirection] = useState(true);
   const [useSfm, setUseSfm] = useState(true);
   const [useOverlay, setUseOverlay] = useState(true);
+  const selectedProjectOptions = useMemo(
+    () => normalizeProjectOptions({
+      useGroundPlane,
+      useZDirection,
+      useSfm,
+      useRealtimeOverlay: useOverlay,
+    }),
+    [useGroundPlane, useZDirection, useSfm, useOverlay]
+  );
+  const enabledStageSet = useMemo(() => getEnabledStageSet(selectedProjectOptions), [selectedProjectOptions]);
+  const enabledStages = useMemo(() => STAGES.filter((stage) => enabledStageSet.has(stage)), [enabledStageSet]);
 
   const [currentJobId, setCurrentJobId] = useState(null);
   const [currentJob, setCurrentJob] = useState(null);
@@ -72,6 +115,12 @@ export function CalibrationConsole({
   const [projectDraftName, setProjectDraftName] = useState("multi-camera-project");
   const [projectDraftDescription, setProjectDraftDescription] = useState("");
   const [projectDraftSharedDwgPath, setProjectDraftSharedDwgPath] = useState("");
+  const [projectDraftOptions, setProjectDraftOptions] = useState({
+    useGroundPlane: true,
+    useZDirection: true,
+    useSfm: true,
+    useRealtimeOverlay: true,
+  });
   const [projectDraftCameras, setProjectDraftCameras] = useState([
     {
       id: "cam-1",
@@ -500,6 +549,7 @@ export function CalibrationConsole({
       sharedMarkers: deepClone(Array.isArray(sharedMarkers) ? sharedMarkers : []),
       cameraWorkspaces: nextWorkspaces,
       activeProjectCameraId: activeProjectCameraId || cameras[0]?.id || "",
+      options: { ...selectedProjectOptions },
       updatedAt: new Date().toISOString(),
     };
   }
@@ -541,9 +591,16 @@ export function CalibrationConsole({
     setTriangulationResult(null);
     setTriangulationStatus("No multi-camera triangulation run yet.");
 
+    const normalizedOptions = normalizeProjectOptions(config?.options);
+
     setProjectDraftName(config?.projectName || "multi-camera-project");
     setProjectDraftDescription(config?.projectDescription || "");
     setProjectDraftSharedDwgPath(sharedPath || "");
+    setProjectDraftOptions(normalizedOptions);
+    setUseGroundPlane(normalizedOptions.useGroundPlane);
+    setUseZDirection(normalizedOptions.useZDirection);
+    setUseSfm(normalizedOptions.useSfm);
+    setUseOverlay(normalizedOptions.useRealtimeOverlay);
     setProjectDraftCameras(
       cameras.length
         ? cameras.map((camera, index) => ({
@@ -812,6 +869,280 @@ export function CalibrationConsole({
     setProjectStatus(`Synced ${pairs.length} marker pairs from camera '${activeProjectCameraId}' into shared markers.`);
   }
 
+  function collectReferenceWorldMarkers(anchorCameraId, workspacesArg = cameraWorkspaces) {
+    const byId = new Map();
+
+    for (const marker of sharedMarkers) {
+      const markerId = String(marker?.id || marker?.markerId || "").trim();
+      const world = Array.isArray(marker?.world) && marker.world.length === 3
+        ? [Number(marker.world[0]), Number(marker.world[1]), Number(marker.world[2])]
+        : null;
+      const pixel = marker?.observations?.[anchorCameraId];
+      if (!markerId || !world || !Array.isArray(pixel) || pixel.length !== 2) {
+        continue;
+      }
+      byId.set(markerId, {
+        markerId,
+        world,
+        anchorPixel: [Number(pixel[0]), Number(pixel[1])],
+      });
+    }
+
+    if (byId.size > 0) {
+      return Array.from(byId.values());
+    }
+
+    const anchorWorkspace = workspacesArg[anchorCameraId] || {};
+    const pairs = normalizeCorrespondenceList(anchorWorkspace.correspondences);
+    return pairs.map((pair, idx) => ({
+      markerId: String(pair.markerId || `m${idx + 1}`),
+      world: [Number(pair.world[0]), Number(pair.world[1]), Number(pair.world[2])],
+      anchorPixel: [Number(pair.pixel[0]), Number(pair.pixel[1])],
+    }));
+  }
+
+  function nearestReferenceMarker(pixel, references, maxDistancePx = 22) {
+    if (!Array.isArray(pixel) || pixel.length !== 2 || !references.length) {
+      return null;
+    }
+    let best = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const ref of references) {
+      const dx = Number(pixel[0]) - Number(ref.anchorPixel[0]);
+      const dy = Number(pixel[1]) - Number(ref.anchorPixel[1]);
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = ref;
+      }
+    }
+    if (!best || bestDist > maxDistancePx) {
+      return null;
+    }
+    return { ...best, distancePx: bestDist };
+  }
+
+  function projectPointWithHomography(h, point) {
+    if (!Array.isArray(h) || h.length !== 3 || !Array.isArray(point) || point.length !== 2) {
+      return null;
+    }
+    const x = Number(point[0]);
+    const y = Number(point[1]);
+    const w = Number(h[2][0]) * x + Number(h[2][1]) * y + Number(h[2][2]);
+    if (!Number.isFinite(w) || Math.abs(w) < 1e-9) {
+      return null;
+    }
+    const u = (Number(h[0][0]) * x + Number(h[0][1]) * y + Number(h[0][2])) / w;
+    const v = (Number(h[1][0]) * x + Number(h[1][1]) * y + Number(h[1][2])) / w;
+    if (!Number.isFinite(u) || !Number.isFinite(v)) {
+      return null;
+    }
+    return [u, v];
+  }
+
+  async function autoPlaceMarkersFromSolvedCameras() {
+    try {
+      if (!activeProjectCameraId) {
+        throw new Error("Open/select a project camera first.");
+      }
+
+      const currentWorkspace = buildCurrentWorkspacePayload();
+      const workspaces = {
+        ...cameraWorkspaces,
+        [activeProjectCameraId]: currentWorkspace,
+      };
+      setCameraWorkspaces(workspaces);
+
+      const solvedCameras = projectCameras.filter((camera) => {
+        const workspace = workspaces[camera.id] || {};
+        return Boolean(workspace.latestCalibrationYamlPath && workspace.snapshotPath);
+      });
+
+      if (!solvedCameras.length) {
+        throw new Error("Need at least one solved camera with snapshot before auto placement.");
+      }
+
+      const targetWorkspace = workspaces[activeProjectCameraId] || {};
+      const targetSnapshot = String(targetWorkspace.snapshotPath || "").trim();
+      if (!targetSnapshot) {
+        throw new Error("Capture a snapshot for current camera first.");
+      }
+
+      const preferredAnchor = solvedCameras.find((camera) => camera.id === "cam-1") || solvedCameras[0];
+      const anchorCameraId = preferredAnchor.id;
+
+      const references = collectReferenceWorldMarkers(anchorCameraId, workspaces);
+      if (!references.length) {
+        throw new Error(`No reference world markers found on anchor camera '${anchorCameraId}'.`);
+      }
+
+      const camerasPayload = [];
+      const added = new Set();
+      const anchorWorkspace = workspaces[anchorCameraId] || {};
+      camerasPayload.push({
+        cameraId: anchorCameraId,
+        snapshotPath: anchorWorkspace.snapshotPath,
+      });
+      added.add(anchorCameraId);
+
+      for (const camera of solvedCameras) {
+        const workspace = workspaces[camera.id] || {};
+        if (!workspace.snapshotPath || added.has(camera.id)) {
+          continue;
+        }
+        camerasPayload.push({
+          cameraId: camera.id,
+          snapshotPath: workspace.snapshotPath,
+        });
+        added.add(camera.id);
+      }
+
+      if (!added.has(activeProjectCameraId)) {
+        camerasPayload.push({
+          cameraId: activeProjectCameraId,
+          snapshotPath: targetSnapshot,
+        });
+      }
+
+      if (camerasPayload.length < 2) {
+        throw new Error("Need at least 2 camera snapshots for feature matching.");
+      }
+
+      const res = await fetch("/api/calibration/web/match-features", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cameras: camerasPayload,
+          matchOptions: {
+            method: "auto",
+            maxFeatures: 2048,
+            maxMatchesPerPair: 900,
+            minConfidence: 0.30,
+            maxImageSide: 1280,
+            anchorCameraId,
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Auto feature matching failed");
+      }
+
+      const matching = data?.matching || {};
+      const markers = Array.isArray(matching?.markers) ? matching.markers : [];
+      const pairModels = Array.isArray(matching?.pair_models) ? matching.pair_models : [];
+      if (!markers.length) {
+        throw new Error("No cross-camera feature markers were found.");
+      }
+
+      const usedReferenceIds = new Set();
+      const autoPairs = [];
+
+      const homographiesToTarget = pairModels.filter((item) => item?.camera_b === activeProjectCameraId && Array.isArray(item?.homography));
+      for (const ref of references) {
+        if (usedReferenceIds.has(ref.markerId)) {
+          continue;
+        }
+        let bestProjection = null;
+        for (const model of homographiesToTarget) {
+          const projected = projectPointWithHomography(model.homography, ref.anchorPixel);
+          if (!projected) {
+            continue;
+          }
+          const score = Number(model.global_similarity || 0) * Number(model.inlier_ratio || 0);
+          if (!bestProjection || score > bestProjection.score) {
+            bestProjection = {
+              pixel: projected,
+              score,
+              sourceCamera: model.camera_a,
+              method: model.method,
+            };
+          }
+        }
+
+        if (bestProjection && bestProjection.score > 0.08) {
+          usedReferenceIds.add(ref.markerId);
+          autoPairs.push({
+            markerId: ref.markerId,
+            world: ref.world,
+            pixel: [Number(bestProjection.pixel[0]), Number(bestProjection.pixel[1])],
+            _meta: {
+              anchorCameraId,
+              sourceCameraId: bestProjection.sourceCamera,
+              method: bestProjection.method,
+              homographyScore: bestProjection.score,
+            },
+          });
+        }
+      }
+
+      for (const marker of markers) {
+        const obs = marker?.observations || {};
+        const anchorPix = obs?.[anchorCameraId];
+        const targetPix = obs?.[activeProjectCameraId];
+        if (!Array.isArray(anchorPix) || anchorPix.length !== 2 || !Array.isArray(targetPix) || targetPix.length !== 2) {
+          continue;
+        }
+
+        const match = nearestReferenceMarker(anchorPix, references, 24);
+        if (!match || usedReferenceIds.has(match.markerId)) {
+          continue;
+        }
+        usedReferenceIds.add(match.markerId);
+        autoPairs.push({
+          markerId: match.markerId,
+          world: match.world,
+          pixel: [Number(targetPix[0]), Number(targetPix[1])],
+          _meta: {
+            anchorCameraId,
+            anchorPixel: [Number(anchorPix[0]), Number(anchorPix[1])],
+            distancePx: Number(match.distancePx),
+          },
+        });
+      }
+
+      if (!autoPairs.length) {
+        throw new Error(
+          `Feature matches found, but none aligned with known world markers from '${anchorCameraId}'. Try adding/syncing more markers in camera-1 first.`
+        );
+      }
+
+      setCorrespondences((prev) => {
+        const prevMap = new Map(normalizeCorrespondenceList(prev).map((item) => [String(item.markerId), item]));
+        for (const pair of autoPairs) {
+          prevMap.set(String(pair.markerId), {
+            markerId: String(pair.markerId),
+            world: [Number(pair.world[0]), Number(pair.world[1]), Number(pair.world[2])],
+            pixel: [Number(pair.pixel[0]), Number(pair.pixel[1])],
+          });
+        }
+        const merged = Array.from(prevMap.values());
+        setCorrespondenceText(JSON.stringify(merged, null, 2));
+        return merged;
+      });
+
+      const pairStats = Array.isArray(matching?.pair_stats) ? matching.pair_stats : [];
+      const methodSummary = pairStats
+        .map((item) => `${item.camera_a}→${item.camera_b}:${item.method}(sim=${Number(item.global_similarity || 0).toFixed(2)})`)
+        .join(", ");
+      const sourceSummary = autoPairs
+        .map((pair) => `${pair.markerId}:${pair._meta?.sourceCameraId || anchorCameraId}/${pair._meta?.method || "match"}`)
+        .slice(0, 20)
+        .join(", ");
+      setSolveStatus(
+        `Auto-placed ${autoPairs.length} marker(s) on '${activeProjectCameraId}' using whole-image feature extraction + geometric transfer. Methods: ${methodSummary || matching?.method_requested || "auto"}.`
+      );
+      setProjectStatus(
+        `Feature source: anchor '${anchorCameraId}', solved cameras used: ${Array.from(added).join(", ")}. Marker sources: ${sourceSummary || "n/a"}.`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Automatic marker placement failed";
+      setSolveStatus(message);
+      setProjectStatus(message);
+    }
+  }
+
   function beginSharedMarkerCapture() {
     if (!activeProjectCameraId) {
       setSolveStatus("Select/open a project camera first.");
@@ -934,6 +1265,7 @@ export function CalibrationConsole({
         cameras,
         sharedMarkers: [],
         cameraWorkspaces: {},
+        options: normalizeProjectOptions(projectDraftOptions),
       };
 
       const res = await fetch("/api/calibration/web/projects", {
@@ -1709,11 +2041,11 @@ export function CalibrationConsole({
   }
 
   function stageAllowed(stage) {
-    const idx = STAGES.indexOf(stage);
+    const idx = enabledStages.indexOf(stage);
     if (idx <= 0) {
       return true;
     }
-    const prevStage = STAGES[idx - 1];
+    const prevStage = enabledStages[idx - 1];
     return Boolean(completedStages[prevStage]);
   }
 
@@ -3467,10 +3799,24 @@ export function CalibrationConsole({
 
           <div className="space-y-3">
             <h2 className="text-lg font-medium">Calibration Features</h2>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={useGroundPlane} onChange={(e) => setUseGroundPlane(e.target.checked)} /> Ground Plane Mapping</label>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={useZDirection} onChange={(e) => setUseZDirection(e.target.checked)} /> Z Direction Mapping</label>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={useSfm} onChange={(e) => setUseSfm(e.target.checked)} /> Structure from Motion</label>
-            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={useOverlay} onChange={(e) => setUseOverlay(e.target.checked)} /> CCTV ↔ 3D DWG Overlay</label>
+            <p className="text-xs text-zinc-500">Set in project creation. Active for this project:</p>
+            <ul className="space-y-1 text-sm">
+              <li className={useGroundPlane ? "text-emerald-300" : "text-zinc-500 line-through"}>Ground Plane Mapping</li>
+              <li className={useZDirection ? "text-emerald-300" : "text-zinc-500 line-through"}>Z Direction Mapping</li>
+              <li className={useSfm ? "text-emerald-300" : "text-zinc-500 line-through"}>Structure from Motion</li>
+              <li className={useOverlay ? "text-emerald-300" : "text-zinc-500 line-through"}>CCTV ↔ 3D DWG Overlay</li>
+            </ul>
+            {!routeProjectId ? (
+              <details className="text-xs text-zinc-400">
+                <summary className="cursor-pointer select-none">Override (standalone mode only)</summary>
+                <div className="mt-2 space-y-1">
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={useGroundPlane} onChange={(e) => setUseGroundPlane(e.target.checked)} /> Ground Plane Mapping</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={useZDirection} onChange={(e) => setUseZDirection(e.target.checked)} /> Z Direction Mapping</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={useSfm} onChange={(e) => setUseSfm(e.target.checked)} /> Structure from Motion</label>
+                  <label className="flex items-center gap-2"><input type="checkbox" checked={useOverlay} onChange={(e) => setUseOverlay(e.target.checked)} /> CCTV ↔ 3D DWG Overlay</label>
+                </div>
+              </details>
+            ) : null}
           </div>
         </section>
 
@@ -3527,6 +3873,7 @@ export function CalibrationConsole({
               projectDraftName,
               projectDraftDescription,
               projectDraftSharedDwgPath,
+              projectDraftOptions,
               projectDraftCameras,
               projectConfigPath,
               projectCameras,
@@ -3545,6 +3892,7 @@ export function CalibrationConsole({
               setProjectDraftName,
               setProjectDraftDescription,
               setProjectDraftSharedDwgPath,
+              setProjectDraftOptions,
               addProjectDraftCamera,
               updateProjectDraftCamera,
               removeProjectDraftCamera,
@@ -3658,6 +4006,7 @@ export function CalibrationConsole({
           renderStageStatus={renderStageStatus}
         />
 
+        {enabledStageSet.has("ground-plane") ? (
         <GroundPlaneStepSection
           data={{
             groundReadiness: getStageReadiness("ground-plane"),
@@ -3702,6 +4051,7 @@ export function CalibrationConsole({
             setGroundPickMode,
             setValidationPickMode,
             beginSharedMarkerCapture,
+            autoPlaceMarkersFromSolvedCameras,
             onFeedError,
             clearFeedError,
             captureSnapshotWeb,
@@ -3742,7 +4092,9 @@ export function CalibrationConsole({
           }}
           renderStageStatus={renderStageStatus}
         />
+        ) : null}
 
+        {enabledStageSet.has("z-mapping") ? (
         <ZMappingStepSection
           data={{
             zReadiness: getStageReadiness("z-mapping"),
@@ -3776,7 +4128,9 @@ export function CalibrationConsole({
           }}
           renderStageStatus={renderStageStatus}
         />
+        ) : null}
 
+        {enabledStageSet.has("cad-3d-dwg") ? (
         <Cad3dStepSection
           data={{
             cadReadiness: getStageReadiness("cad-3d-dwg"),
@@ -3795,10 +4149,11 @@ export function CalibrationConsole({
           }}
           renderStageStatus={renderStageStatus}
         />
+        ) : null}
 
         <RemainingStagesSection
           data={{
-            stages: STAGES,
+            stages: enabledStages,
             stageOutputs,
             stageMessages,
             jobLoading,

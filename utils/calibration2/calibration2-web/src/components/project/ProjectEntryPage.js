@@ -38,6 +38,12 @@ export default function ProjectEntryPage() {
   const [sharedDwgPath, setSharedDwgPath] = useState("");
   const [sharedDwgFileName, setSharedDwgFileName] = useState("");
   const [sharedDwgSegments, setSharedDwgSegments] = useState([]);
+  const [projectFeatures, setProjectFeatures] = useState({
+    useGroundPlane: true,
+    useZDirection: true,
+    useSfm: true,
+    useRealtimeOverlay: true,
+  });
   const [cameras, setCameras] = useState([buildDraftCamera(1)]);
   const [submitting, setSubmitting] = useState(false);
 
@@ -165,6 +171,12 @@ export default function ProjectEntryPage() {
             cameras: normalizedCameras,
             sharedMarkers: [],
             cameraWorkspaces: initialCameraWorkspaces,
+            options: {
+              useGroundPlane: Boolean(projectFeatures.useGroundPlane),
+              useZDirection: Boolean(projectFeatures.useZDirection),
+              useSfm: Boolean(projectFeatures.useSfm),
+              useRealtimeOverlay: Boolean(projectFeatures.useRealtimeOverlay),
+            },
           },
         }),
       });
@@ -299,6 +311,42 @@ export default function ProjectEntryPage() {
                 Upload Shared DWG
               </button>
               <p className="text-xs text-zinc-400 break-all">{sharedDwgPath || "No shared DWG uploaded."}</p>
+            </div>
+
+            <div className="space-y-3 rounded border border-zinc-800 bg-zinc-950/50 p-3">
+              <h3 className="text-sm font-medium">Calibration Features</h3>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={projectFeatures.useGroundPlane}
+                  onChange={(event) => setProjectFeatures((prev) => ({ ...prev, useGroundPlane: event.target.checked }))}
+                />
+                Ground Plane Mapping
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={projectFeatures.useZDirection}
+                  onChange={(event) => setProjectFeatures((prev) => ({ ...prev, useZDirection: event.target.checked }))}
+                />
+                Z Direction Mapping
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={projectFeatures.useSfm}
+                  onChange={(event) => setProjectFeatures((prev) => ({ ...prev, useSfm: event.target.checked }))}
+                />
+                Structure from Motion
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={projectFeatures.useRealtimeOverlay}
+                  onChange={(event) => setProjectFeatures((prev) => ({ ...prev, useRealtimeOverlay: event.target.checked }))}
+                />
+                CCTV ↔ 3D DWG Overlay
+              </label>
             </div>
 
             <div className="space-y-3">

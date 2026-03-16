@@ -23,9 +23,13 @@ export default function RemainingStagesSection({ data, actions, refs, renderStag
 
   return (
     <>
-      {stages.filter((s) => !["intrinsic", "ground-plane", "z-mapping", "cad-3d-dwg"].includes(s)).map((stage, idx) => (
+      {stages.filter((s) => !["intrinsic", "ground-plane", "z-mapping", "cad-3d-dwg"].includes(s)).map((stage, idx) => {
+        // Count how many of the "dedicated step" stages are included in the full stages list
+        const dedicatedCount = ["intrinsic", "ground-plane", "z-mapping", "cad-3d-dwg"].filter((s) => stages.includes(s)).length;
+        const stepNumber = dedicatedCount + idx + 1;
+        return (
         <section key={stage} className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
-          <h2 className="text-xl font-semibold">Step {idx + 5}: {stage}</h2>
+          <h2 className="text-xl font-semibold">Step {stepNumber}: {stage}</h2>
           <p className={`text-xs ${getStageReadiness(stage).enabled ? "text-emerald-300" : "text-amber-300"}`}>
             {getStageReadiness(stage).status}
           </p>
@@ -64,7 +68,8 @@ export default function RemainingStagesSection({ data, actions, refs, renderStag
           <p className="text-xs text-zinc-300">{stageMessages[stage] || "Ready"}</p>
           {renderStageStatus(stage)}
         </section>
-      ))}
+        );
+      })}
     </>
   );
 }

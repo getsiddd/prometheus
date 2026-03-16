@@ -2,6 +2,186 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+function rotateXY([x, y], angleRad) {
+  const c = Math.cos(angleRad);
+  const s = Math.sin(angleRad);
+  return [x * c - y * s, x * s + y * c];
+}
+
+function norm3(v) {
+  if (!Array.isArray(v) || v.length !== 3) return null;
+  const len = Math.hypot(v[0], v[1], v[2]);
+  if (len < 1e-9) return null;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function rodriguesMatrix(rvec) {
+  if (!Array.isArray(rvec) || rvec.length !== 3) return null;
+  const angle = Math.hypot(rvec[0], rvec[1], rvec[2]);
+  if (angle < 1e-10) {
+    return [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+  }
+  const kx = rvec[0] / angle;
+  const ky = rvec[1] / angle;
+  const kz = rvec[2] / angle;
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const t = 1 - c;
+  return [
+    [t * kx * kx + c, t * kx * ky - s * kz, t * kx * kz + s * ky],
+    [t * kx * ky + s * kz, t * ky * ky + c, t * ky * kz - s * kx],
+    [t * kx * kz - s * ky, t * ky * kz + s * kx, t * kz * kz + c],
+  ];
+}
+
+function matTmulVec3(m, v) {
+  return [
+    m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2],
+    m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
+    m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2],
+  ];
+}
+
+function intersectRayWithGround(origin, dir) {
+  if (!origin || !dir) return null;
+  if (Math.abs(dir[2]) < 1e-6) return null;
+  const t = -origin[2] / dir[2];
+  if (!Number.isFinite(t) || t <= 0) return null;
+  return [
+    origin[0] + t * dir[0],
+    origin[1] + t * dir[1],
+    0,
+  ];
+}
+
+function defaultHorizontalFovDeg(cameraType) {
+  switch (String(cameraType || "").toLowerCase()) {
+    case "fisheye":
+      return 150;
+    case "wide-angle":
+    case "wide_angle":
+      return 110;
+    case "cctv":
+      return 85;
+    default:
+      return 68;
+  }
+}
+
+function buildCameraConeGeometry(cameraPosition, cameraIntrinsic, sceneScale) {
+  const origin = Array.isArray(cameraPosition?.position) && cameraPosition.position.length === 3
+    ? cameraPosition.position
+    : null;
+  const lookDir = norm3(cameraPosition?.lookDir);
+  if (!origin || !lookDir) {
+    return null;
+  }
+
+  const K = cameraIntrinsic?.K;
+  const imgW = Number(cameraIntrinsic?.imageWidth) > 1 ? Number(cameraIntrinsic.imageWidth) : 1280;
+  const imgH = Number(cameraIntrinsic?.imageHeight) > 1 ? Number(cameraIntrinsic.imageHeight) : 720;
+
+  const buildRayFromPixel = (u, v) => {
+    if (!Array.isArray(K) || K.length !== 3 || !Array.isArray(K[0])) {
+      return null;
+    }
+    const fx = Number(K?.[0]?.[0]);
+    const fy = Number(K?.[1]?.[1]);
+    const cx = Number(K?.[0]?.[2]);
+    const cy = Number(K?.[1]?.[2]);
+    if (!(fx > 0) || !(fy > 0)) {
+      return null;
+    }
+    const R = rodriguesMatrix(cameraPosition?._rvec);
+    if (!R) {
+      return null;
+    }
+    const rayCam = norm3([(u - cx) / fx, (v - cy) / fy, 1]);
+    if (!rayCam) {
+      return null;
+    }
+    return norm3(matTmulVec3(R, rayCam));
+  };
+
+  const boundaryPixels = [
+    [0, imgH * 0.55],
+    [imgW * 0.1, imgH * 0.88],
+    [imgW * 0.9, imgH * 0.88],
+    [imgW, imgH * 0.55],
+  ];
+  const boundaryGround = [];
+  for (const [u, v] of boundaryPixels) {
+    const ray = buildRayFromPixel(u, v);
+    const ground = intersectRayWithGround(origin, ray);
+    if (ground) {
+      boundaryGround.push(ground);
+    }
+  }
+
+  const centerRay = buildRayFromPixel(imgW / 2, imgH / 2) || lookDir;
+  const centerGround = intersectRayWithGround(origin, centerRay);
+
+  if (boundaryGround.length >= 2) {
+    const sorted = [...boundaryGround].sort((a, b) => {
+      const aa = Math.atan2(a[1] - origin[1], a[0] - origin[0]);
+      const bb = Math.atan2(b[1] - origin[1], b[0] - origin[0]);
+      return aa - bb;
+    });
+    return { origin, centerGround, boundaryGround: sorted };
+  }
+
+  const sceneLen = Math.max(sceneScale * 0.9, 2.5);
+  const hfovDeg = defaultHorizontalFovDeg(cameraIntrinsic?.cameraType || cameraPosition?.cameraType);
+  const half = (hfovDeg * Math.PI) / 360;
+  const dirXY = norm3([lookDir[0], lookDir[1], 0]) || [0, 1, 0];
+  const leftXY = rotateXY([dirXY[0], dirXY[1]], -half);
+  const rightXY = rotateXY([dirXY[0], dirXY[1]], half);
+
+  let fallbackCenter = centerGround;
+  if (!fallbackCenter) {
+    fallbackCenter = [
+      origin[0] + dirXY[0] * sceneLen,
+      origin[1] + dirXY[1] * sceneLen,
+      0,
+    ];
+  }
+
+  const sideWidth = Math.max(sceneLen * Math.tan(half), sceneLen * 0.18);
+  const perp = [-dirXY[1], dirXY[0]];
+  const leftGround = intersectRayWithGround(origin, norm3([leftXY[0], leftXY[1], Math.min(lookDir[2], -0.25)])) || [
+    fallbackCenter[0] - perp[0] * sideWidth,
+    fallbackCenter[1] - perp[1] * sideWidth,
+    0,
+  ];
+  const rightGround = intersectRayWithGround(origin, norm3([rightXY[0], rightXY[1], Math.min(lookDir[2], -0.25)])) || [
+    fallbackCenter[0] + perp[0] * sideWidth,
+    fallbackCenter[1] + perp[1] * sideWidth,
+    0,
+  ];
+
+  return {
+    origin,
+    centerGround: fallbackCenter,
+    boundaryGround: [leftGround, rightGround],
+  };
+}
+
+function getCameraPresetAngles(cameraPosition) {
+  const lookDir = norm3(cameraPosition?.lookDir);
+  if (!lookDir) return null;
+  const horiz = Math.hypot(lookDir[0], lookDir[1]);
+  const yawDeg = (Math.atan2(-lookDir[0], -lookDir[1]) * 180) / Math.PI;
+  const pitchDeg = (-Math.atan2(horiz, lookDir[2]) * 180) / Math.PI;
+  return {
+    yaw: yawDeg,
+    pitch: Math.max(-89.5, Math.min(89.5, pitchDeg)),
+  };
+}
+
 export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldPoints = [], validationWorldPoints = [], title = "", cameraPosition = null, cameraIntrinsic = null }) {
   const canvasRef = useRef(null);
   const [yaw, setYaw] = useState(35);
@@ -18,8 +198,11 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
     for (const s of segments) {
       all.push(s.a, s.b);
     }
+    if (Array.isArray(cameraPosition?.position) && cameraPosition.position.length === 3) {
+      all.push(cameraPosition.position);
+    }
     return all;
-  }, [segments]);
+  }, [segments, cameraPosition]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -203,6 +386,7 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       const camWorld = cameraPosition.position;
       const lookDir = Array.isArray(cameraPosition.lookDir) ? cameraPosition.lookDir : [0, 0, 1];
       const cp = project(camWorld);
+      const sceneScale = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
 
       // Draw camera icon: filled magenta circle with cross
       ctx.save();
@@ -256,79 +440,45 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
         ctx.restore();
       }
 
-      // FOV cone: use K if provided (project image corner rays to Z=0 floor)
-      const K = cameraIntrinsic?.K;
-      const imgW = cameraIntrinsic?.imageWidth || 1280;
-      const imgH = cameraIntrinsic?.imageHeight || 720;
-      if (Array.isArray(K) && K.length === 3 && Array.isArray(K[0])) {
-        const fx = K[0][0]; const fy = K[1][1];
-        const cx2 = K[0][2]; const cy2 = K[1][2];
-        if (fx > 0 && fy > 0) {
-          const corners2d = [[0, 0], [imgW, 0], [imgW, imgH], [0, imgH]];
-          // Rodrigues to R (already computed above, but let's recompute from rvec if available)
-          const rvec = cameraPosition._rvec;
-          const tvec = cameraPosition._tvec;
-          if (Array.isArray(rvec) && Array.isArray(tvec)) {
-            const angle2 = Math.sqrt(rvec[0]**2 + rvec[1]**2 + rvec[2]**2);
-            if (angle2 > 1e-10) {
-              const kk = rvec.map(v => v / angle2);
-              const cc = Math.cos(angle2), ss = Math.sin(angle2), tt = 1 - cc;
-              const Rr = [
-                [tt*kk[0]*kk[0]+cc,       tt*kk[0]*kk[1]-ss*kk[2], tt*kk[0]*kk[2]+ss*kk[1]],
-                [tt*kk[0]*kk[1]+ss*kk[2], tt*kk[1]*kk[1]+cc,       tt*kk[1]*kk[2]-ss*kk[0]],
-                [tt*kk[0]*kk[2]-ss*kk[1], tt*kk[1]*kk[2]+ss*kk[0], tt*kk[2]*kk[2]+cc],
-              ];
-              const RrT = [[Rr[0][0],Rr[1][0],Rr[2][0]],[Rr[0][1],Rr[1][1],Rr[2][1]],[Rr[0][2],Rr[1][2],Rr[2][2]]];
-              const camCentW = [
-                -(Rr[0][0]*tvec[0]+Rr[1][0]*tvec[1]+Rr[2][0]*tvec[2]),
-                -(Rr[0][1]*tvec[0]+Rr[1][1]*tvec[1]+Rr[2][1]*tvec[2]),
-                -(Rr[0][2]*tvec[0]+Rr[1][2]*tvec[1]+Rr[2][2]*tvec[2]),
-              ];
-              const fovScreenPts = [];
-              for (const [u, v] of corners2d) {
-                // Normalized ray in camera space
-                const xn = (u - cx2) / fx;
-                const yn = (v - cy2) / fy;
-                const rayC = [xn, yn, 1.0];
-                // Ray in world space: Rr^T * rayC
-                const rayWx = RrT[0][0]*rayC[0]+RrT[0][1]*rayC[1]+RrT[0][2]*rayC[2];
-                const rayWy = RrT[1][0]*rayC[0]+RrT[1][1]*rayC[1]+RrT[1][2]*rayC[2];
-                const rayWz = RrT[2][0]*rayC[0]+RrT[2][1]*rayC[1]+RrT[2][2]*rayC[2];
-                // Intersect with Z=0 plane: camCentW[2] + t*rayWz = 0
-                if (Math.abs(rayWz) > 1e-6) {
-                  const tt2 = -camCentW[2] / rayWz;
-                  if (tt2 > 0) {
-                    const wx = camCentW[0] + tt2 * rayWx;
-                    const wy = camCentW[1] + tt2 * rayWy;
-                    fovScreenPts.push(project([wx, wy, 0]));
-                  }
-                }
-              }
-              if (fovScreenPts.length === 4) {
-                ctx.save();
-                ctx.strokeStyle = "rgba(217,70,239,0.45)";
-                ctx.lineWidth = 1;
-                ctx.setLineDash([3, 4]);
-                // Draw cone lines from cam to each corner
-                for (const fp of fovScreenPts) {
-                  ctx.beginPath();
-                  ctx.moveTo(cp[0], cp[1]);
-                  ctx.lineTo(fp[0], fp[1]);
-                  ctx.stroke();
-                }
-                // Connect corners
-                ctx.beginPath();
-                ctx.moveTo(fovScreenPts[0][0], fovScreenPts[0][1]);
-                for (let i = 1; i <= 4; i++) {
-                  ctx.lineTo(fovScreenPts[i % 4][0], fovScreenPts[i % 4][1]);
-                }
-                ctx.stroke();
-                ctx.setLineDash([]);
-                ctx.restore();
-              }
-            }
-          }
+      const cone = buildCameraConeGeometry(cameraPosition, cameraIntrinsic, sceneScale);
+      if (cone?.boundaryGround?.length >= 2) {
+        const boundaryPts = cone.boundaryGround.map((p) => project(p));
+        const centerPt = cone.centerGround ? project(cone.centerGround) : null;
+        ctx.save();
+        ctx.fillStyle = "rgba(217,70,239,0.10)";
+        ctx.strokeStyle = "rgba(217,70,239,0.58)";
+        ctx.lineWidth = 1.5;
+
+        ctx.beginPath();
+        ctx.moveTo(cp[0], cp[1]);
+        for (const pt of boundaryPts) {
+          ctx.lineTo(pt[0], pt[1]);
         }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.setLineDash([5, 4]);
+        for (const pt of boundaryPts) {
+          ctx.beginPath();
+          ctx.moveTo(cp[0], cp[1]);
+          ctx.lineTo(pt[0], pt[1]);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.moveTo(boundaryPts[0][0], boundaryPts[0][1]);
+        for (let i = 1; i < boundaryPts.length; i += 1) {
+          ctx.lineTo(boundaryPts[i][0], boundaryPts[i][1]);
+        }
+        ctx.stroke();
+        if (centerPt) {
+          ctx.strokeStyle = "rgba(244,114,182,0.9)";
+          ctx.beginPath();
+          ctx.moveTo(cp[0], cp[1]);
+          ctx.lineTo(centerPt[0], centerPt[1]);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        ctx.restore();
       }
     }
 
@@ -391,6 +541,18 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
     setPanY(0);
   }
 
+  function onCameraPresetView() {
+    const preset = getCameraPresetAngles(cameraPosition);
+    if (!preset) {
+      return;
+    }
+    setYaw(preset.yaw);
+    setPitch(preset.pitch);
+    setZoom(1.15);
+    setPanX(0);
+    setPanY(0);
+  }
+
   function onCanvasClick(e) {
     if (typeof onPickWorld !== "function") {
       return;
@@ -446,7 +608,9 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
   }
 
   function applyPresetView(name) {
-    if (name === "front") {
+    if (name === "camera") {
+      onCameraPresetView();
+    } else if (name === "front") {
       setYaw(0);
       setPitch(0);
     } else if (name === "back") {
@@ -496,6 +660,7 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
         <button onClick={() => applyPresetView("back")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Back</button>
         <button onClick={() => applyPresetView("top")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Top</button>
         <button onClick={() => applyPresetView("bottom")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Bottom</button>
+        <button onClick={() => applyPresetView("camera")} disabled={!cameraPosition} className="rounded border border-fuchsia-700 px-2 py-1 hover:bg-zinc-800 disabled:opacity-40">Camera</button>
         <button onClick={() => applyPresetView("iso")} className="rounded border border-zinc-600 px-2 py-1 hover:bg-zinc-800">Iso</button>
       </div>
     </div>

@@ -85,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument("--calibration-yaml", required=True)
     p_validate.add_argument("--intrinsics", default="")
 
+    p_pose_ground = sub.add_parser("detect-ground-pose")
+    p_pose_ground.add_argument("--image", required=True)
+    p_pose_ground.add_argument("--max-side", type=int, default=960)
+    p_pose_ground.add_argument("--min-person-score", type=float, default=0.65)
+    p_pose_ground.add_argument("--min-keypoint-score", type=float, default=0.35)
+
     p_triangulate = sub.add_parser("triangulate-multiview")
     p_triangulate.add_argument("--cameras-json", required=True)
     p_triangulate.add_argument("--markers-json", required=True)
@@ -141,6 +147,16 @@ def main() -> None:
     if args.cmd == "validate-mapping":
         points = load_json_arg(args.validation_json, "--validation-json")
         result = backend.validate_mapping(points, args.calibration_yaml, args.intrinsics)
+        print(json.dumps({"ok": True, "result": result}))
+        return
+
+    if args.cmd == "detect-ground-pose":
+        result = backend.detect_ground_points_from_pose(
+            args.image,
+            max_side=args.max_side,
+            min_person_score=args.min_person_score,
+            min_keypoint_score=args.min_keypoint_score,
+        )
         print(json.dumps({"ok": True, "result": result}))
         return
 

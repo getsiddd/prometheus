@@ -4,6 +4,7 @@ from .common import CalibrationUtils
 from .facade import WebCalibrationBackend
 from .feature_matching_service import MultiViewFeatureMatchingService
 from .intrinsic_service import IntrinsicCalibrationService
+from .pose_ground_service import HumanPoseGroundService
 from .pnp_service import PnPCalibrationService
 from .snapshot_service import SnapshotService
 from .triangulation_service import MultiViewTriangulationService
@@ -14,6 +15,7 @@ __all__ = [
     "WebCalibrationBackend",
     "MultiViewFeatureMatchingService",
     "IntrinsicCalibrationService",
+    "HumanPoseGroundService",
     "PnPCalibrationService",
     "SnapshotService",
     "MultiViewTriangulationService",

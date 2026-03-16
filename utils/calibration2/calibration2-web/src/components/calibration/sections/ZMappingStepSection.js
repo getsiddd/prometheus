@@ -45,6 +45,8 @@ export default function ZMappingStepSection({ data, actions, renderStageStatus }
     stageOutputZMapping,
     jobLoading,
     sequenceRunning,
+    cameraPosition = null,
+    cameraIntrinsic = null,
   } = data;
 
   const {
@@ -266,6 +268,8 @@ export default function ZMappingStepSection({ data, actions, renderStageStatus }
             pickedWorldPoints={groundWorldPoints}
             validationWorldPoints={zTipWorldPoints}
             title={cadTitle}
+            cameraPosition={cameraPosition}
+            cameraIntrinsic={cameraIntrinsic}
           />
           <label className="block text-xs">Z-Mapping Output Path
             <input

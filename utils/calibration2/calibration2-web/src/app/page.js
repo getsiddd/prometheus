@@ -114,6 +114,10 @@ export function CalibrationConsole({
   const [validationPairs, setValidationPairs] = useState([]);
   const [validationStatus, setValidationStatus] = useState("No live validation run yet.");
   const [validationResult, setValidationResult] = useState(null);
+  const [autoGroundSuggestions, setAutoGroundSuggestions] = useState([]);
+  const [autoGroundStatus, setAutoGroundStatus] = useState("No automatic human ground detection run yet.");
+  const [autoGroundLoading, setAutoGroundLoading] = useState(false);
+  const [pendingAutoGroundIndex, setPendingAutoGroundIndex] = useState(null);
   const [intrinsicSessionId, setIntrinsicSessionId] = useState("default");
   const [intrinsicStatus, setIntrinsicStatus] = useState("No intrinsic samples captured yet.");
   const [intrinsicSampleCount, setIntrinsicSampleCount] = useState(0);
@@ -180,8 +184,32 @@ export function CalibrationConsole({
   const [stageOutputLoading, setStageOutputLoading] = useState({});
   const [intrinsicSolveResult, setIntrinsicSolveResult] = useState(null);
   const [pnpSolveResult, setPnpSolveResult] = useState(null);
-  const cameraPosition = useMemo(() => deriveCameraPosition(pnpSolveResult), [pnpSolveResult]);
   const [snapshotNaturalSize, setSnapshotNaturalSize] = useState({ width: 1, height: 1 });
+  const cameraPosition = useMemo(() => deriveCameraPosition(pnpSolveResult), [pnpSolveResult]);
+  const cameraIntrinsic = useMemo(() => {
+    const K = Array.isArray(pnpSolveResult?.intrinsic?.K)
+      ? pnpSolveResult.intrinsic.K
+      : Array.isArray(intrinsicSolveResult?.K)
+        ? intrinsicSolveResult.K
+        : null;
+    const D = Array.isArray(pnpSolveResult?.intrinsic?.D)
+      ? pnpSolveResult.intrinsic.D
+      : Array.isArray(intrinsicSolveResult?.D)
+        ? intrinsicSolveResult.D
+        : null;
+
+    if (!K && !cameraType) {
+      return null;
+    }
+
+    return {
+      K,
+      D,
+      imageWidth: snapshotNaturalSize?.width > 1 ? snapshotNaturalSize.width : 1280,
+      imageHeight: snapshotNaturalSize?.height > 1 ? snapshotNaturalSize.height : 720,
+      cameraType: intrinsicSolveResult?.camera_type || cameraType || "pinhole",
+    };
+  }, [pnpSolveResult, intrinsicSolveResult, snapshotNaturalSize, cameraType]);
   const [draggingImagePointIndex, setDraggingImagePointIndex] = useState(null);
 
   const dwgInputRef = useRef(null);
@@ -215,6 +243,52 @@ export function CalibrationConsole({
         pixel: [Number(item.pixel[0]), Number(item.pixel[1])],
       });
     }
+    return normalized;
+  }
+
+  function normalizeAutoGroundSuggestions(items) {
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    const normalizePoint = (value) => {
+      if (!Array.isArray(value) || value.length !== 2) {
+        return null;
+      }
+      const point = [Number(value[0]), Number(value[1])];
+      return point.every((entry) => Number.isFinite(entry)) ? point : null;
+    };
+
+    const normalizeBox = (value) => {
+      if (!Array.isArray(value) || value.length !== 4) {
+        return null;
+      }
+      const box = value.map((entry) => Number(entry));
+      return box.every((entry) => Number.isFinite(entry)) ? box : null;
+    };
+
+    const normalized = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      const pixel = normalizePoint(item?.pixel);
+      if (!pixel) {
+        continue;
+      }
+
+      const score = Number(item?.score);
+      const personScore = Number(item?.person_score ?? item?.personScore);
+      normalized.push({
+        id: String(item?.id || `auto-ground-${i + 1}`),
+        pixel,
+        score: Number.isFinite(score) ? score : null,
+        person_score: Number.isFinite(personScore) ? personScore : null,
+        source: String(item?.source || "bbox-bottom-center"),
+        box: normalizeBox(item?.box),
+        left_ankle: normalizePoint(item?.left_ankle),
+        right_ankle: normalizePoint(item?.right_ankle),
+      });
+    }
+
     return normalized;
   }
 
@@ -282,6 +356,8 @@ export function CalibrationConsole({
       correspondences: normalizeCorrespondenceList(workspace.correspondences),
       zMappings: Array.isArray(workspace.zMappings) ? workspace.zMappings : [],
       validationPairs: Array.isArray(workspace.validationPairs) ? workspace.validationPairs : [],
+      autoGroundSuggestions: normalizeAutoGroundSuggestions(workspace.autoGroundSuggestions),
+      autoGroundStatus: String(workspace.autoGroundStatus || "No automatic human ground detection run yet."),
       snapshotDataUrl: workspace.snapshotDataUrl || "",
       snapshotPath: workspace.snapshotPath || "",
       segments: Array.isArray(workspace.segments) ? workspace.segments : [],
@@ -460,6 +536,8 @@ export function CalibrationConsole({
       correspondences: deepClone(normalizeCorrespondenceList(correspondences)),
       zMappings: deepClone(Array.isArray(zMappings) ? zMappings : []),
       validationPairs: deepClone(Array.isArray(validationPairs) ? validationPairs : []),
+      autoGroundSuggestions: deepClone(normalizeAutoGroundSuggestions(autoGroundSuggestions)),
+      autoGroundStatus: autoGroundStatus || "No automatic human ground detection run yet.",
       intrinsicsPath: intrinsicsPath || "",
       latestCalibrationYamlPath: latestCalibrationYamlPath || "",
       stageOutputs: deepClone(stageOutputs),
@@ -474,6 +552,7 @@ export function CalibrationConsole({
     const loadedPairs = normalizeCorrespondenceList(workspace.correspondences);
     const loadedZmappings = Array.isArray(workspace.zMappings) ? workspace.zMappings : [];
     const loadedValidation = Array.isArray(workspace.validationPairs) ? workspace.validationPairs : [];
+    const loadedAutoGroundSuggestions = normalizeAutoGroundSuggestions(workspace.autoGroundSuggestions);
 
     setCameraType(workspace.cameraType || camera?.cameraType || "cctv");
     setSourceMode(workspace.sourceMode || camera?.sourceMode || "rtsp");
@@ -504,6 +583,14 @@ export function CalibrationConsole({
     setCorrespondenceText(JSON.stringify(loadedPairs, null, 2));
     setZMappings(loadedZmappings);
     setValidationPairs(loadedValidation);
+    setAutoGroundSuggestions(loadedAutoGroundSuggestions);
+    setAutoGroundStatus(
+      workspace.autoGroundStatus ||
+        (loadedAutoGroundSuggestions.length
+          ? `Loaded ${loadedAutoGroundSuggestions.length} automatic human ground suggestion${loadedAutoGroundSuggestions.length === 1 ? "" : "s"}.`
+          : "No automatic human ground detection run yet.")
+    );
+    setPendingAutoGroundIndex(null);
     setIntrinsicsPath(workspace.intrinsicsPath || camera?.intrinsicsPath || "");
     setLatestCalibrationYamlPath(workspace.latestCalibrationYamlPath || "");
     setStageOutputs(workspace.stageOutputs || stageOutputs);
@@ -633,6 +720,7 @@ export function CalibrationConsole({
 
     setImagePickMode("shared-marker");
     setPendingSharedMarkerIndex(idx);
+    setPendingAutoGroundIndex(null);
     setPendingImagePoint(null);
     const marker = sharedMarkers[idx];
     setSolveStatus(`Shared marker mode active. Click image point for marker '${marker.id}'.`);
@@ -641,6 +729,7 @@ export function CalibrationConsole({
   function stopSharedMarkerCapture() {
     setImagePickMode("ground");
     setPendingSharedMarkerIndex(null);
+    setPendingAutoGroundIndex(null);
     setPendingImagePoint(null);
     setSolveStatus("Shared marker capture stopped.");
   }
@@ -1258,6 +1347,8 @@ export function CalibrationConsole({
     correspondences,
     zMappings,
     validationPairs,
+    autoGroundSuggestions,
+    autoGroundStatus,
     intrinsicsPath,
     latestCalibrationYamlPath,
     stageOutputs,
@@ -1947,6 +2038,9 @@ export function CalibrationConsole({
         setSnapshotDataUrl(saveData.snapshotDataUrl || imageDataUrl);
         setSnapshotPath(saveData.outputPath || "");
         setSnapshotStatus(`Webcam snapshot captured: ${saveData.outputPath}`);
+        setAutoGroundSuggestions([]);
+        setPendingAutoGroundIndex(null);
+        setAutoGroundStatus("Snapshot updated. Run automatic human ground detection.");
         return;
       }
 
@@ -1962,9 +2056,202 @@ export function CalibrationConsole({
       setSnapshotDataUrl(data.snapshotDataUrl || "");
       setSnapshotPath(data.outputPath || "");
       setSnapshotStatus(`Snapshot captured from ${sourceUrl}`);
+      setAutoGroundSuggestions([]);
+      setPendingAutoGroundIndex(null);
+      setAutoGroundStatus("Snapshot updated. Run automatic human ground detection.");
     } catch (err) {
       setSnapshotStatus(err instanceof Error ? err.message : "Snapshot capture failed");
     }
+  }
+
+  async function detectAutoGroundPoints() {
+    try {
+      if (!snapshotDataUrl) {
+        throw new Error("Capture a snapshot first, then run automatic human ground detection.");
+      }
+
+      setAutoGroundLoading(true);
+      setAutoGroundStatus("Detecting human ground-contact points on CPU... first run may download model weights.");
+
+      const res = await fetch("/api/calibration/web/ground/pose-detect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageDataUrl: snapshotDataUrl,
+          maxSide: 960,
+          minPersonScore: 0.65,
+          minKeypointScore: 0.35,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Automatic human ground detection failed");
+      }
+
+      const result = data?.result || {};
+      const suggestions = normalizeAutoGroundSuggestions(result?.suggestions);
+      const count = suggestions.length;
+      const device = String(result?.device || "cpu");
+
+      setAutoGroundSuggestions(suggestions);
+      setPendingAutoGroundIndex(null);
+      setAutoGroundStatus(
+        count
+          ? `Detected ${count} automatic human ground suggestion${count === 1 ? "" : "s"} using ${device} inference. Select one and then pick the matching CAD point.`
+          : "No human ground suggestions found. Try a clearer snapshot with visible feet or full body pose."
+      );
+    } catch (err) {
+      setAutoGroundStatus(err instanceof Error ? err.message : "Automatic human ground detection failed");
+    } finally {
+      setAutoGroundLoading(false);
+    }
+  }
+
+  function clearAutoGroundSuggestions() {
+    setAutoGroundSuggestions([]);
+    setPendingAutoGroundIndex(null);
+    setPendingImagePoint(null);
+    setAutoGroundStatus("Automatic human ground suggestions cleared.");
+  }
+
+  function deleteAutoGroundSuggestion(index) {
+    const shouldClearPending = pendingAutoGroundIndex === index;
+    setAutoGroundSuggestions((prev) => {
+      const next = prev.filter((_, itemIndex) => itemIndex !== index);
+      setAutoGroundStatus(
+        next.length
+          ? `${next.length} automatic human ground suggestion${next.length === 1 ? " remains" : "s remain"}.`
+          : "Automatic human ground suggestions cleared."
+      );
+      return next;
+    });
+
+    setPendingAutoGroundIndex((prev) => {
+      if (prev === null) {
+        return prev;
+      }
+      if (prev === index) {
+        return null;
+      }
+      return prev > index ? prev - 1 : prev;
+    });
+
+    if (shouldClearPending) {
+      setPendingImagePoint(null);
+    }
+  }
+
+  function selectAutoGroundSuggestion(index) {
+    const suggestion = autoGroundSuggestions[index];
+    if (!suggestion) {
+      return;
+    }
+
+    setImagePickMode("ground");
+    setPendingZGroundIndex(null);
+    setPendingZImageTip(null);
+    setPendingSharedMarkerIndex(null);
+    setPendingWorldPoint(null);
+    setPendingImagePoint([Number(suggestion.pixel[0]), Number(suggestion.pixel[1])]);
+    setPendingAutoGroundIndex(index);
+    setSolveStatus(
+      `Auto suggestion A${index + 1} selected at P[${Number(suggestion.pixel[0]).toFixed(1)}, ${Number(suggestion.pixel[1]).toFixed(1)}]. Now pick the matching CAD point.`
+    );
+  }
+
+  function buildValidationPairFromPixel(pixel) {
+    if (!Array.isArray(pixel) || pixel.length !== 2) {
+      return { error: "Invalid image point for validation." };
+    }
+
+    const normalizedPixel = [Number(pixel[0]), Number(pixel[1])];
+    if (!normalizedPixel.every((value) => Number.isFinite(value))) {
+      return { error: "Invalid image point for validation." };
+    }
+
+    const projectedWorld = estimateGroundWorldFromPixel(normalizedPixel);
+    if (!projectedWorld) {
+      return { error: "Failed to project point onto CAD ground. Add clean pairs and rerun Solve PnP." };
+    }
+
+    return {
+      pair: {
+        world: projectedWorld,
+        pixel: normalizedPixel,
+      },
+    };
+  }
+
+  function projectAutoGroundSuggestionToValidation(index) {
+    const readiness = getGroundValidationReadiness();
+    if (!readiness.enabled) {
+      setSolveStatus(readiness.status);
+      setValidationStatus(readiness.status);
+      return;
+    }
+
+    const suggestion = autoGroundSuggestions[index];
+    if (!suggestion) {
+      return;
+    }
+
+    const built = buildValidationPairFromPixel(suggestion.pixel);
+    if (!built.pair) {
+      setSolveStatus(built.error || "Failed to project automatic human ground point.");
+      return;
+    }
+
+    setValidationPairs((prev) => [...prev, built.pair]);
+    setPendingWorldPoint(null);
+    setPendingImagePoint(null);
+    setPendingAutoGroundIndex(index);
+    setValidationStatus("Automatic human ground point projected onto CAD. Add more points and run validation.");
+    setSolveStatus(
+      `Auto suggestion A${index + 1} projected: P[${Number(built.pair.pixel[0]).toFixed(1)}, ${Number(built.pair.pixel[1]).toFixed(1)}] → W[${built.pair.world
+        .map((value) => Number(value).toFixed(2))
+        .join(", ")}]`
+    );
+  }
+
+  function projectAllAutoGroundSuggestionsToValidation() {
+    const readiness = getGroundValidationReadiness();
+    if (!readiness.enabled) {
+      setSolveStatus(readiness.status);
+      setValidationStatus(readiness.status);
+      return;
+    }
+
+    if (!autoGroundSuggestions.length) {
+      setSolveStatus("No automatic human ground suggestions available.");
+      return;
+    }
+
+    const projected = [];
+    let skipped = 0;
+    for (const suggestion of autoGroundSuggestions) {
+      const built = buildValidationPairFromPixel(suggestion.pixel);
+      if (built.pair) {
+        projected.push(built.pair);
+      } else {
+        skipped += 1;
+      }
+    }
+
+    if (!projected.length) {
+      setSolveStatus("Failed to project automatic human ground suggestions onto CAD ground.");
+      return;
+    }
+
+    setValidationPairs((prev) => [...prev, ...projected]);
+    setPendingWorldPoint(null);
+    setPendingImagePoint(null);
+    setPendingAutoGroundIndex(null);
+    setValidationStatus(
+      `Projected ${projected.length} automatic human ground point${projected.length === 1 ? "" : "s"} onto CAD${skipped ? ` (${skipped} skipped)` : ""}.`
+    );
+    setSolveStatus(
+      `Projected ${projected.length} automatic human ground suggestion${projected.length === 1 ? "" : "s"} into validation${skipped ? ` (${skipped} skipped)` : ""}.`
+    );
   }
 
   async function captureIntrinsicSample() {
@@ -2119,6 +2406,7 @@ export function CalibrationConsole({
       setPendingZGroundIndex(null);
       setPendingZImageTip(null);
       setImagePickMode("z");
+      setPendingAutoGroundIndex(null);
       setSolveStatus("Z-direction mapping added. Click another ground marker for next Z pair, or switch mode.");
       return;
     }
@@ -2141,6 +2429,7 @@ export function CalibrationConsole({
     });
     setPendingWorldPoint(null);
     setPendingImagePoint(null);
+    setPendingAutoGroundIndex(null);
     setSolveStatus("Point pair added. Repeat: Image point first, then CAD point.");
   }
 
@@ -2253,29 +2542,28 @@ export function CalibrationConsole({
         return;
       }
 
-      const projectedWorld = estimateGroundWorldFromPixel([xPix, yPix]);
-      if (!projectedWorld) {
-        setSolveStatus("Failed to project point onto CAD ground. Add clean pairs and rerun Solve PnP.");
+      const built = buildValidationPairFromPixel([xPix, yPix]);
+      if (!built.pair) {
+        setSolveStatus(built.error || "Failed to project point onto CAD ground.");
         return;
       }
 
-      const pair = {
-        world: projectedWorld,
-        pixel: [xPix, yPix],
-      };
+      const pair = built.pair;
 
       setValidationPairs((prev) => [...prev, pair]);
       setPendingWorldPoint(null);
       setPendingImagePoint(null);
+      setPendingAutoGroundIndex(null);
       setValidationStatus("Validation point projected on CAD. Add more points and run validation.");
       setSolveStatus(
-        `Validation point projected: P[${xPix.toFixed(1)}, ${yPix.toFixed(1)}] → W[${projectedWorld
+        `Validation point projected: P[${xPix.toFixed(1)}, ${yPix.toFixed(1)}] → W[${pair.world
           .map((value) => Number(value).toFixed(2))
           .join(", ")}]`
       );
       return;
     }
 
+    setPendingAutoGroundIndex(null);
     setPendingImagePoint([xPix, yPix]);
     setSolveStatus(`Image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
   }
@@ -2296,6 +2584,7 @@ export function CalibrationConsole({
     setPendingZGroundIndex(null);
     setPendingZImageTip(null);
     setPendingSharedMarkerIndex(null);
+    setPendingAutoGroundIndex(null);
     setSolveStatus("Z-direction mode: click a ground marker (green circle) to select the anchor point.");
   }
 
@@ -2312,6 +2601,7 @@ export function CalibrationConsole({
     setPendingZGroundIndex(null);
     setPendingZImageTip(null);
     setPendingSharedMarkerIndex(null);
+    setPendingAutoGroundIndex(null);
     setSolveStatus("Ground pick mode active.");
   }
 
@@ -2448,6 +2738,7 @@ export function CalibrationConsole({
     setPendingZImageTip(null);
     setPendingSharedMarkerIndex(null);
     setPendingImagePoint(null);
+    setPendingAutoGroundIndex(null);
     setSolveStatus("Validation pick mode active. Click image point to project it onto CAD ground.");
   }
 
@@ -2674,10 +2965,16 @@ export function CalibrationConsole({
       let homographyRmse = null;
       {
         const errors = validationPairs.map((vp) => {
-          const projected = estimateGroundWorldFromPixel(vp.image);
+          const pixel = Array.isArray(vp?.pixel) ? vp.pixel : Array.isArray(vp?.image) ? vp.image : null;
+          const world = Array.isArray(vp?.world) ? vp.world : null;
+          if (!pixel || !world || pixel.length !== 2 || world.length !== 3) {
+            return null;
+          }
+
+          const projected = estimateGroundWorldFromPixel(pixel);
           if (!projected) return null;
-          const dx = projected.x - vp.world.x;
-          const dy = projected.y - vp.world.y;
+          const dx = projected[0] - Number(world[0]);
+          const dy = projected[1] - Number(world[1]);
           return Math.sqrt(dx * dx + dy * dy);
         }).filter((e) => e !== null);
         if (errors.length > 0) {
@@ -3051,6 +3348,10 @@ export function CalibrationConsole({
             snapshotNaturalSize,
             correspondences,
             validationPairs,
+            autoGroundSuggestions,
+            autoGroundStatus,
+            autoGroundLoading,
+            pendingAutoGroundIndex,
             pendingImagePoint,
             solveStatus,
             jobLoading,
@@ -3061,6 +3362,7 @@ export function CalibrationConsole({
             stageOutputGroundPlane: stageOutputs["ground-plane"],
             pnpSolveResult,
             cameraPosition,
+            cameraIntrinsic,
           }}
           actions={{
             setGroundPickMode,
@@ -3069,6 +3371,7 @@ export function CalibrationConsole({
             onFeedError,
             clearFeedError,
             captureSnapshotWeb,
+            detectAutoGroundPoints,
             onSnapshotImageLoad,
             onSnapshotPick,
             onImagePointMouseDown,
@@ -3077,6 +3380,11 @@ export function CalibrationConsole({
             deletePair,
             clearValidationPairs,
             deleteValidationPair,
+            selectAutoGroundSuggestion,
+            projectAutoGroundSuggestionToValidation,
+            projectAllAutoGroundSuggestionsToValidation,
+            deleteAutoGroundSuggestion,
+            clearAutoGroundSuggestions,
             uploadDwg,
             runHeadlessSolve,
             runStageCard,
@@ -3108,6 +3416,8 @@ export function CalibrationConsole({
             stageOutputZMapping: stageOutputs["z-mapping"],
             jobLoading,
             sequenceRunning,
+            cameraPosition,
+            cameraIntrinsic,
           }}
           actions={{
             beginZPointCapture,
@@ -3133,6 +3443,8 @@ export function CalibrationConsole({
             stageOutputCad: stageOutputs["cad-3d-dwg"],
             jobLoading,
             sequenceRunning,
+            cameraPosition,
+            cameraIntrinsic,
           }}
           actions={{
             setStageOutput,

@@ -16,6 +16,10 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     snapshotNaturalSize,
     correspondences,
     validationPairs,
+    autoGroundSuggestions = [],
+    autoGroundStatus,
+    autoGroundLoading = false,
+    pendingAutoGroundIndex = null,
     pendingImagePoint,
     solveStatus,
     jobLoading,
@@ -26,6 +30,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     stageOutputGroundPlane,
     pnpSolveResult = null,
     cameraPosition = null,
+    cameraIntrinsic = null,
   } = data;
 
   const {
@@ -35,6 +40,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     onFeedError,
     clearFeedError,
     captureSnapshotWeb,
+    detectAutoGroundPoints,
     onSnapshotImageLoad,
     onSnapshotPick,
     onImagePointMouseDown,
@@ -43,6 +49,11 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     deletePair,
     clearValidationPairs,
     deleteValidationPair,
+    selectAutoGroundSuggestion,
+    projectAutoGroundSuggestionToValidation,
+    projectAllAutoGroundSuggestionsToValidation,
+    deleteAutoGroundSuggestion,
+    clearAutoGroundSuggestions,
     uploadDwg,
     runHeadlessSolve,
     runStageCard,
@@ -84,8 +95,18 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
           ) : feedEnabled ? (
             <img src={liveFeedSrc} onError={onFeedError} onLoad={clearFeedError} alt="Ground feed" className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black" />
           ) : null}
-          <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Snapshot for Point Mapping</button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Snapshot for Point Mapping</button>
+            <button
+              onClick={detectAutoGroundPoints}
+              disabled={!snapshotDataUrl || autoGroundLoading}
+              className="rounded border border-sky-700 bg-sky-900/40 px-3 py-2 text-sm hover:bg-sky-800/50 disabled:opacity-40"
+            >
+              {autoGroundLoading ? "Detecting Human Ground Points..." : "Detect Human Ground Points"}
+            </button>
+          </div>
           <p className="text-xs text-zinc-400">{snapshotStatus}</p>
+          <p className={`text-xs ${autoGroundSuggestions.length ? "text-sky-300" : "text-zinc-400"}`}>{autoGroundStatus}</p>
           {snapshotDataUrl ? (
             <div className="space-y-1">
               <div className="text-[11px] text-zinc-400">Left click to add image point. Drag green points to adjust. In Validation mode, each click is auto-projected onto CAD.</div>
@@ -141,6 +162,43 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
                         <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">V{idx + 1}</text>
                       </g>
                     ))}
+                    {autoGroundSuggestions.map((suggestion, idx) => {
+                      const active = pendingAutoGroundIndex === idx;
+                      const box = Array.isArray(suggestion.box) && suggestion.box.length === 4 ? suggestion.box : null;
+                      return (
+                        <g key={suggestion.id || `auto-ground-${idx}`} opacity={active ? 1 : 0.95} pointerEvents="none">
+                          {box ? (
+                            <rect
+                              x={box[0]}
+                              y={box[1]}
+                              width={Math.max(0, box[2] - box[0])}
+                              height={Math.max(0, box[3] - box[1])}
+                              fill="rgba(14,165,233,0.05)"
+                              stroke={active ? "#0ea5e9" : "#38bdf8"}
+                              strokeDasharray="8 6"
+                              strokeWidth="2"
+                            />
+                          ) : null}
+                          <circle
+                            cx={suggestion.pixel[0]}
+                            cy={suggestion.pixel[1]}
+                            r={active ? "10" : "8"}
+                            fill={active ? "#0ea5e9" : "#38bdf8"}
+                            stroke="#082f49"
+                            strokeWidth="2"
+                          />
+                          <text
+                            x={suggestion.pixel[0] + 10}
+                            y={suggestion.pixel[1] - 10}
+                            fill={active ? "#7dd3fc" : "#38bdf8"}
+                            fontSize="14"
+                            fontWeight="700"
+                          >
+                            A{idx + 1}
+                          </text>
+                        </g>
+                      );
+                    })}
                     {pendingImagePoint ? (
                       <g>
                         <circle cx={pendingImagePoint[0]} cy={pendingImagePoint[1]} r="7" fill="#f59e0b" />
@@ -155,6 +213,50 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
           <div className="flex flex-wrap gap-2">
             <button onClick={undoPair} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Undo Pair</button>
             <button onClick={clearPairs} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Clear Pairs</button>
+          </div>
+          <div className="max-h-48 overflow-auto rounded border border-zinc-700 p-2 text-xs space-y-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-zinc-300">Automatic human ground suggestions: {autoGroundSuggestions.length}</span>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={projectAllAutoGroundSuggestionsToValidation}
+                  disabled={!groundValidationReadiness?.enabled || !autoGroundSuggestions.length}
+                  className="rounded border border-sky-700 px-2 py-0.5 text-[11px] hover:bg-zinc-800 disabled:opacity-40"
+                >
+                  Project All to Validation
+                </button>
+                <button
+                  onClick={clearAutoGroundSuggestions}
+                  disabled={!autoGroundSuggestions.length}
+                  className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800 disabled:opacity-40"
+                >
+                  Clear Suggestions
+                </button>
+              </div>
+            </div>
+            {autoGroundSuggestions.map((suggestion, idx) => (
+              <div
+                key={`auto-ground-row-${suggestion.id || idx}`}
+                className={`rounded border px-2 py-1 ${pendingAutoGroundIndex === idx ? "border-sky-500 bg-sky-950/30" : "border-zinc-800 bg-zinc-950/40"}`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    A{idx + 1} {suggestion.source === "ankles" ? "ankles" : "bbox"} → P[{suggestion.pixel.map((v) => Number(v).toFixed(1)).join(",")}] · score {typeof suggestion.score === "number" ? suggestion.score.toFixed(2) : "n/a"}
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => selectAutoGroundSuggestion(idx)} className="rounded border border-sky-700 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Use for Pair</button>
+                    <button
+                      onClick={() => projectAutoGroundSuggestionToValidation(idx)}
+                      disabled={!groundValidationReadiness?.enabled}
+                      className="rounded border border-amber-700 px-2 py-0.5 text-[11px] hover:bg-zinc-800 disabled:opacity-40"
+                    >
+                      Project to Validation
+                    </button>
+                    <button onClick={() => deleteAutoGroundSuggestion(idx)} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Delete</button>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
           <div className="max-h-44 overflow-auto rounded border border-zinc-700 p-2 text-xs space-y-1">
             {correspondences.map((p, idx) => (
@@ -216,6 +318,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
             validationWorldPoints={validationPairs.map((p) => p.world)}
             title={pendingImagePoint ? "Pick CAD point for selected image point" : "First select image point, then CAD point"}
             cameraPosition={cameraPosition}
+            cameraIntrinsic={cameraIntrinsic}
           />
           <CameraPositionPanel pnpSolveResult={pnpSolveResult} />
           <label className="block text-xs">Ground Plane Output Path

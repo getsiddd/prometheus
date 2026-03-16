@@ -5,6 +5,7 @@ from __future__ import annotations
 from .common import CalibrationUtils
 from .feature_matching_service import MultiViewFeatureMatchingService
 from .intrinsic_service import IntrinsicCalibrationService
+from .pose_ground_service import HumanPoseGroundService
 from .pnp_service import PnPCalibrationService
 from .snapshot_service import SnapshotService
 from .triangulation_service import MultiViewTriangulationService
@@ -18,6 +19,7 @@ class WebCalibrationBackend:
         self.utils = CalibrationUtils()
         self.snapshot_service = SnapshotService(self.utils)
         self.intrinsic_service = IntrinsicCalibrationService(self.utils)
+        self.pose_ground_service = HumanPoseGroundService(self.utils)
         self.pnp_service = PnPCalibrationService(self.utils)
         self.validation_service = MappingValidationService(self.utils)
         self.feature_matching_service = MultiViewFeatureMatchingService(self.utils)
@@ -86,6 +88,21 @@ class WebCalibrationBackend:
 
     def validate_mapping(self, validation_points: list[dict], calibration_yaml: str, intrinsics: str = ""):
         return self.validation_service.validate_mapping(validation_points, calibration_yaml, intrinsics)
+
+    def detect_ground_points_from_pose(
+        self,
+        image: str,
+        *,
+        max_side: int = 960,
+        min_person_score: float = 0.65,
+        min_keypoint_score: float = 0.35,
+    ):
+        return self.pose_ground_service.detect_ground_points(
+            image,
+            max_side=max_side,
+            min_person_score=min_person_score,
+            min_keypoint_score=min_keypoint_score,
+        )
 
     def match_multiview_features(self, cameras: list[dict], match_options: dict | None = None):
         return self.feature_matching_service.build_shared_markers_from_cameras(cameras, match_options)

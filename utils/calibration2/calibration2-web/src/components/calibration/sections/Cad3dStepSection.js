@@ -11,6 +11,8 @@ export default function Cad3dStepSection({ data, actions, renderStageStatus }) {
     stageOutputCad,
     jobLoading,
     sequenceRunning,
+    cameraPosition = null,
+    cameraIntrinsic = null,
   } = data;
 
   const { setStageOutput, runStageCard } = actions;
@@ -34,6 +36,8 @@ export default function Cad3dStepSection({ data, actions, renderStageStatus }) {
               ...zMappings.map((z) => z.worldZ),
             ]}
             title="CAD with ground-plane + Z-direction highlights"
+            cameraPosition={cameraPosition}
+            cameraIntrinsic={cameraIntrinsic}
           />
           <label className="block text-xs">CAD-3D-DWG Output Path
             <input value={stageOutputCad || ""} onChange={(e) => setStageOutput("cad-3d-dwg", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />

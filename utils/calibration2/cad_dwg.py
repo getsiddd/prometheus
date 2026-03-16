@@ -1,3 +1,5 @@
+"""CAD ingestion and lightweight 2D/3D rendering utilities for calibration workflows."""
+
 import math
 from dataclasses import dataclass
 
@@ -7,6 +9,8 @@ import numpy as np
 
 @dataclass
 class CADCanvasMapper:
+    """Maps CAD world XY coordinates to 2D canvas pixels and back."""
+
     min_x: float
     min_y: float
     max_x: float
@@ -17,11 +21,13 @@ class CADCanvasMapper:
     canvas_h: int
 
     def world_to_canvas(self, x, y):
+        """Convert a CAD world XY point into canvas pixel coordinates."""
         cx = int((x - self.min_x) * self.scale + self.pad)
         cy = int(self.canvas_h - ((y - self.min_y) * self.scale + self.pad))
         return cx, cy
 
     def canvas_to_world(self, cx, cy):
+        """Convert a canvas pixel coordinate back into CAD world XY coordinates."""
         x = (cx - self.pad) / self.scale + self.min_x
         y = ((self.canvas_h - cy) - self.pad) / self.scale + self.min_y
         return float(x), float(y)
@@ -29,6 +35,8 @@ class CADCanvasMapper:
 
 @dataclass
 class CADViewState:
+    """Viewer state for interactive 3D CAD preview (rotation, zoom, pan)."""
+
     yaw_deg: float = 35.0
     pitch_deg: float = -30.0
     roll_deg: float = 0.0
@@ -38,6 +46,7 @@ class CADViewState:
 
 
 def _entity_points(entity):
+    """Extract polyline-like XY points from supported CAD entities."""
     etype = entity.dxftype()
 
     if etype == "LINE":
@@ -61,6 +70,7 @@ def _entity_points(entity):
 
 
 def _entity_points_3d(entity):
+    """Extract polyline-like XYZ points from supported CAD entities."""
     etype = entity.dxftype()
 
     if etype == "LINE":
@@ -100,6 +110,7 @@ def _entity_points_3d(entity):
 
 
 def load_dwg_geometry(dwg_path):
+    """Load 2D CAD line segments/vertices and return XY bounds."""
     try:
         import ezdxf
     except ImportError as exc:
@@ -141,6 +152,7 @@ def load_dwg_geometry(dwg_path):
 
 
 def render_cad_canvas(segments, bounds, canvas_w=1200, canvas_h=900, pad=50):
+    """Render 2D CAD line segments into a preview canvas and return its mapper."""
     min_x, min_y, max_x, max_y = bounds
 
     span_x = max(max_x - min_x, 1e-6)
@@ -173,6 +185,7 @@ def render_cad_canvas(segments, bounds, canvas_w=1200, canvas_h=900, pad=50):
 
 
 def nearest_vertex_world(click_xy, vertices_world, mapper, max_px=25):
+    """Find the nearest CAD world vertex to a clicked 2D canvas point."""
     cx, cy = click_xy
     best = None
     best_dist = 1e12
@@ -191,6 +204,7 @@ def nearest_vertex_world(click_xy, vertices_world, mapper, max_px=25):
 
 
 def load_dwg_geometry_3d(dwg_path):
+    """Load 3D CAD line segments/vertices and return XYZ bounds."""
     try:
         import ezdxf
     except ImportError as exc:
@@ -241,6 +255,7 @@ def load_dwg_geometry_3d(dwg_path):
 
 
 def _rotation_matrix(yaw_deg, pitch_deg, roll_deg):
+    """Build a simple Euler rotation matrix for preview rendering."""
     yaw = math.radians(yaw_deg)
     pitch = math.radians(pitch_deg)
     roll = math.radians(roll_deg)
@@ -257,6 +272,7 @@ def _rotation_matrix(yaw_deg, pitch_deg, roll_deg):
 
 
 def render_cad_canvas_3d(segments3d, vertices3d, state=None, canvas_w=1200, canvas_h=900, pad=80):
+    """Render a depth-sorted 3D CAD wireframe into a 2D canvas view."""
     if state is None:
         state = CADViewState()
 
@@ -306,6 +322,7 @@ def render_cad_canvas_3d(segments3d, vertices3d, state=None, canvas_w=1200, canv
 
 
 def nearest_vertex_world_3d(click_xy, projected_vertices, max_px=20):
+    """Pick the nearest projected 3D CAD vertex for interactive correspondence selection."""
     cx, cy = click_xy
     best = None
     best_dist = 1e12

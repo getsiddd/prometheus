@@ -12,6 +12,10 @@ const STAGES = [
   "overlay",
 ];
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function ProjectedCadViewer({ segments, onPickWorld, pickedWorldPoints = [], title = "" }) {
   const canvasRef = useRef(null);
   const [yaw, setYaw] = useState(35);
@@ -390,6 +394,10 @@ export default function Home() {
     '[\n  {"world":[0,0,0],"pixel":[100,100]},\n  {"world":[6,0,0],"pixel":[500,110]},\n  {"world":[6,4,0],"pixel":[520,320]},\n  {"world":[0,4,0],"pixel":[90,310]}\n]'
   );
   const [solveStatus, setSolveStatus] = useState("No headless solve run yet.");
+  const [latestCalibrationYamlPath, setLatestCalibrationYamlPath] = useState("");
+  const [validationPairs, setValidationPairs] = useState([]);
+  const [validationStatus, setValidationStatus] = useState("No live validation run yet.");
+  const [validationResult, setValidationResult] = useState(null);
   const [intrinsicSessionId, setIntrinsicSessionId] = useState("default");
   const [intrinsicStatus, setIntrinsicStatus] = useState("No intrinsic samples captured yet.");
   const [intrinsicSampleCount, setIntrinsicSampleCount] = useState(0);
@@ -429,6 +437,9 @@ export default function Home() {
     overlay: "Ready",
   });
   const [activeStage, setActiveStage] = useState("");
+  const [sequenceRunning, setSequenceRunning] = useState(false);
+  const [sequenceStatus, setSequenceStatus] = useState("Combined sequence is idle.");
+  const [sequenceLogs, setSequenceLogs] = useState([]);
   const [completedStages, setCompletedStages] = useState({
     intrinsic: false,
     "ground-plane": false,
@@ -567,7 +578,7 @@ export default function Home() {
           logs: Array.isArray(data.job.logs) ? data.job.logs : ["Job started"],
         },
       }));
-      return { ok: true };
+      return { ok: true, jobId: data.job.id };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start stage";
       setDwgMessage(msg);
@@ -575,6 +586,132 @@ export default function Home() {
       return { ok: false, error: msg };
     } finally {
       setJobLoading(false);
+    }
+  }
+
+  function appendSequenceLog(message) {
+    setSequenceLogs((prev) => {
+      const next = [...prev, message];
+      return next.length > 160 ? next.slice(next.length - 160) : next;
+    });
+  }
+
+  async function waitForStageCompletion(stage, jobId, timeoutMs = 25 * 60 * 1000) {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const res = await fetch(`/api/calibration/jobs/${jobId}`, { cache: "no-store" });
+      if (!res.ok) {
+        await sleep(700);
+        continue;
+      }
+
+      const data = await res.json();
+      const job = data?.job;
+      if (!job) {
+        await sleep(700);
+        continue;
+      }
+
+      setCurrentJob(job);
+      setCurrentJobId(jobId);
+
+      setStageJobState((prev) => ({
+        ...prev,
+        [stage]: {
+          status: job.status || "idle",
+          progress: job.progress || 0,
+          logs: Array.isArray(job.logs) ? job.logs : [],
+        },
+      }));
+
+      const outPath = job?.result?.outputPath || job?.result?.calibrationFile || job?.result?.outputDir;
+      if (outPath) {
+        setStageResolvedOutputs((prev) => ({ ...prev, [stage]: outPath }));
+      }
+
+      if (job.status === "completed") {
+        setCompletedStages((prev) => ({ ...prev, [stage]: true }));
+        setStageMessage(stage, "Completed");
+        appendSequenceLog(`✅ ${stage} completed`);
+        return { ok: true, job };
+      }
+
+      if (job.status === "failed") {
+        const errorMessage = job?.result?.error || `Stage '${stage}' failed`;
+        setStageMessage(stage, "Failed");
+        appendSequenceLog(`❌ ${stage} failed: ${errorMessage}`);
+        return { ok: false, error: errorMessage, job };
+      }
+
+      await sleep(700);
+    }
+
+    const timeoutMessage = `Stage '${stage}' timed out after ${Math.floor(timeoutMs / 60000)} minutes.`;
+    appendSequenceLog(`⏱️ ${timeoutMessage}`);
+    return { ok: false, error: timeoutMessage };
+  }
+
+  async function runCombinedSequence() {
+    if (sequenceRunning) {
+      return;
+    }
+
+    setSequenceRunning(true);
+    setSequenceStatus("Starting combined calibration sequence...");
+    setSequenceLogs([]);
+
+    const resetCompleted = STAGES.reduce((acc, stageName) => ({
+      ...acc,
+      [stageName]: false,
+    }), {});
+    setCompletedStages(resetCompleted);
+    const localCompleted = { ...resetCompleted };
+
+    const resetStageState = STAGES.reduce((acc, stageName) => ({
+      ...acc,
+      [stageName]: { status: "idle", progress: 0, logs: [] },
+    }), {});
+    setStageJobState(resetStageState);
+
+    appendSequenceLog(`▶️ Running stages in order: ${STAGES.join(" -> ")}`);
+
+    try {
+      for (const stage of STAGES) {
+        const readiness = getCombinedReadiness(stage, localCompleted);
+        if (!readiness.enabled) {
+          const blockedMessage = `${stage} blocked: ${readiness.status}`;
+          setStageMessage(stage, readiness.status);
+          setSequenceStatus(`Combined run stopped at '${stage}'.`);
+          appendSequenceLog(`🛑 ${blockedMessage}`);
+          return;
+        }
+
+        setActiveStage(stage);
+        setStageMessage(stage, "Running...");
+        appendSequenceLog(`🚀 Starting ${stage}`);
+
+        const started = await startStage(stage);
+        if (!started?.ok || !started?.jobId) {
+          const startError = started?.error || `Failed to start stage '${stage}'`;
+          setSequenceStatus(`Combined run failed at '${stage}'.`);
+          appendSequenceLog(`❌ ${stage} start failed: ${startError}`);
+          return;
+        }
+
+        const done = await waitForStageCompletion(stage, started.jobId);
+        if (!done.ok) {
+          setSequenceStatus(`Combined run failed at '${stage}'.`);
+          return;
+        }
+
+        localCompleted[stage] = true;
+      }
+
+      setSequenceStatus("Combined calibration sequence completed successfully.");
+      appendSequenceLog("🎉 All stages completed");
+    } finally {
+      setSequenceRunning(false);
     }
   }
 
@@ -655,6 +792,55 @@ export default function Home() {
       if (!stageAllowed(stage)) {
         return { enabled: false, status: "Complete Z Mapping stage first." };
       }
+      if (!dwgPath) {
+        return { enabled: false, status: "Upload CAD/DWG first." };
+      }
+      return { enabled: true, status: "Ready. Review CAD with ground+Z highlights and run stage." };
+    }
+
+    return { enabled: true, status: "Ready. Run this stage." };
+  }
+
+  function getCombinedReadiness(stage, completedMap) {
+    const idx = STAGES.indexOf(stage);
+    if (idx > 0) {
+      const prevStage = STAGES[idx - 1];
+      if (!completedMap[prevStage]) {
+        return { enabled: false, status: "Complete previous stage first." };
+      }
+    }
+
+    if (stage === "intrinsic") {
+      if (sourceMode !== "webcam" && !sourceUrl) {
+        return { enabled: false, status: "Set source URL or switch to webcam." };
+      }
+      return { enabled: true, status: "Ready. Capture samples and run intrinsic stage." };
+    }
+
+    if (stage === "ground-plane") {
+      if (!dwgPath) {
+        return { enabled: false, status: "Upload CAD/DWG first." };
+      }
+      if (!snapshotDataUrl) {
+        return { enabled: false, status: "Capture snapshot first." };
+      }
+      if (correspondences.length < 4) {
+        return { enabled: false, status: `Add at least 4 image↔CAD point pairs (current: ${correspondences.length}).` };
+      }
+      return { enabled: true, status: "Ready. Run Ground Plane stage." };
+    }
+
+    if (stage === "z-mapping") {
+      if (!snapshotDataUrl) {
+        return { enabled: false, status: "Capture snapshot first for Z preview." };
+      }
+      if (zMappings.length < 1) {
+        return { enabled: false, status: "Add at least 1 Z-direction point from existing ground points." };
+      }
+      return { enabled: true, status: "Ready. Run Z Mapping stage." };
+    }
+
+    if (stage === "cad-3d-dwg") {
       if (!dwgPath) {
         return { enabled: false, status: "Upload CAD/DWG first." };
       }
@@ -1007,6 +1193,15 @@ export default function Home() {
       pixel: pendingImagePoint,
     };
 
+    if (imagePickMode === "validation") {
+      setValidationPairs((prev) => [...prev, pair]);
+      setPendingWorldPoint(null);
+      setPendingImagePoint(null);
+      setValidationStatus("Validation point added. Add more points and run validation.");
+      setSolveStatus("Validation point pair added.");
+      return;
+    }
+
     setCorrespondences((prev) => {
       const next = [...prev, pair];
       setCorrespondenceText(JSON.stringify(next, null, 2));
@@ -1062,6 +1257,10 @@ export default function Home() {
     }
 
     setPendingImagePoint([xPix, yPix]);
+    if (imagePickMode === "validation") {
+      setSolveStatus(`Validation image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
+      return;
+    }
     setSolveStatus(`Image point selected: [${xPix.toFixed(1)}, ${yPix.toFixed(1)}]. Now pick CAD point.`);
   }
 
@@ -1074,6 +1273,18 @@ export default function Home() {
     setImagePickMode("z");
     setPendingZGroundIndex(idx);
     setSolveStatus(`Z-point capture armed for ground pair #${idx + 1}. Click image point above it.`);
+  }
+
+  function setGroundPickMode() {
+    setImagePickMode("ground");
+    setPendingZGroundIndex(null);
+    setSolveStatus("Ground pick mode active.");
+  }
+
+  function setValidationPickMode() {
+    setImagePickMode("validation");
+    setPendingZGroundIndex(null);
+    setSolveStatus("Validation pick mode active. Click image point, then pick matching CAD point.");
   }
 
   function clearZMappings() {
@@ -1158,6 +1369,15 @@ export default function Home() {
     });
   }
 
+  function clearValidationPairs() {
+    setValidationPairs([]);
+    setValidationResult(null);
+  }
+
+  function deleteValidationPair(index) {
+    setValidationPairs((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function runHeadlessSolve() {
     try {
       const correspondences = JSON.parse(correspondenceText);
@@ -1173,9 +1393,50 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(data?.error || "Headless solve failed");
       }
+      setLatestCalibrationYamlPath(data.outputYaml || "");
+      setValidationStatus(`Calibration ready for validation: ${data.outputYaml}`);
       setSolveStatus(`Headless solve OK. Output: ${data.outputYaml}`);
     } catch (err) {
       setSolveStatus(err instanceof Error ? err.message : "Headless solve failed");
+    }
+  }
+
+  async function runLiveValidation() {
+    try {
+      if (!validationPairs.length) {
+        throw new Error("Add at least 1 validation point (switch to Validation pick mode first).");
+      }
+
+      const calibrationYamlPath = latestCalibrationYamlPath || stageResolvedOutputs["ground-plane"] || "";
+      if (!calibrationYamlPath) {
+        throw new Error("Calibration YAML path is required. Run 'Solve PnP from Pairs' first.");
+      }
+
+      const res = await fetch("/api/calibration/web/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          validationPoints: validationPairs,
+          calibrationYamlPath,
+          intrinsicsPath,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Live validation failed");
+      }
+
+      const result = data?.validation || null;
+      setValidationResult(result);
+
+      const worldRmse = result?.metrics?.world_error?.rmse;
+      const reprojRmse = result?.metrics?.reprojection_error_px?.rmse;
+      setValidationStatus(
+        `Validation OK. World RMSE=${typeof worldRmse === "number" ? worldRmse.toFixed(4) : "n/a"} m, Reprojection RMSE=${typeof reprojRmse === "number" ? reprojRmse.toFixed(2) : "n/a"} px`
+      );
+    } catch (err) {
+      setValidationStatus(err instanceof Error ? err.message : "Live validation failed");
     }
   }
 
@@ -1263,6 +1524,25 @@ export default function Home() {
           </div>
         </section>
 
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+          <h2 className="text-lg font-medium">Combined Calibration Sequence</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={runCombinedSequence}
+              disabled={sequenceRunning || jobLoading}
+              className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
+            >
+              {sequenceRunning ? "Running Combined Sequence..." : "Run All Calibration Stages"}
+            </button>
+            <span className="text-xs text-zinc-400">{sequenceStatus}</span>
+          </div>
+          {sequenceLogs.length ? (
+            <pre className="max-h-36 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-300">
+              {sequenceLogs.join("\n")}
+            </pre>
+          ) : null}
+        </section>
+
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
           <h2 className="text-lg font-medium">Browser Feed (RTSP/CCTV/File)</h2>
@@ -1335,7 +1615,7 @@ export default function Home() {
                   <button onClick={solveIntrinsicWeb} className="rounded border border-blue-700 bg-blue-900/40 px-3 py-2 text-sm hover:bg-blue-800/50">Solve Intrinsic</button>
                 ) : null}
                 <button
-                  disabled={jobLoading || !stageAllowed("intrinsic")}
+                  disabled={jobLoading || sequenceRunning || !stageAllowed("intrinsic")}
                   onClick={() => runStageCard("intrinsic")}
                   className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
                 >
@@ -1415,7 +1695,13 @@ export default function Home() {
             <div className="space-y-3">
               <div className="text-sm text-zinc-300">Camera side (draw image points)</div>
               <div className="text-xs text-zinc-400">Workflow: click image point first, then pick CAD point. Existing image points are draggable.</div>
-              <div className="text-xs text-zinc-400">Ground mode active in this step.</div>
+              <div className="text-xs text-zinc-400">
+                Pick mode: {imagePickMode === "validation" ? "Validation" : imagePickMode === "z" ? "Z Mapping" : "Ground"}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={setGroundPickMode} className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800">Ground Pick Mode</button>
+                <button onClick={setValidationPickMode} className="rounded border border-amber-700 bg-amber-900/30 px-2 py-1 text-xs hover:bg-amber-800/40">Validation Pick Mode</button>
+              </div>
               {sourceMode === "webcam" ? (
                 <video ref={groundVideoRef} autoPlay playsInline muted className="w-full max-h-[320px] rounded border border-zinc-700 object-contain bg-black" />
               ) : feedEnabled ? (
@@ -1470,10 +1756,23 @@ export default function Home() {
                         <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#22c55e" fontSize="16" fontWeight="700">{idx + 1}</text>
                       </g>
                     ))}
+                    {validationPairs.map((p, idx) => (
+                      <g key={`val-p-${idx}`}>
+                        <circle
+                          cx={p.pixel[0]}
+                          cy={p.pixel[1]}
+                          r="8"
+                          fill="#f59e0b"
+                          stroke="#7c2d12"
+                          strokeWidth="2"
+                        />
+                        <text x={p.pixel[0] + 10} y={p.pixel[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">V{idx + 1}</text>
+                      </g>
+                    ))}
                     {pendingImagePoint ? (
                       <g>
                         <circle cx={pendingImagePoint[0]} cy={pendingImagePoint[1]} r="7" fill="#f59e0b" />
-                        <text x={pendingImagePoint[0] + 10} y={pendingImagePoint[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">P</text>
+                        <text x={pendingImagePoint[0] + 10} y={pendingImagePoint[1] - 10} fill="#f59e0b" fontSize="14" fontWeight="700">{imagePickMode === "validation" ? "V" : "P"}</text>
                       </g>
                     ) : null}
                       </svg>
@@ -1490,6 +1789,18 @@ export default function Home() {
                   <div key={idx} className="flex items-center justify-between gap-2">
                     <span>#{idx + 1} W[{p.world.map((v) => Number(v).toFixed(2)).join(",")}] → P[{p.pixel.map((v) => Number(v).toFixed(1)).join(",")}]</span>
                     <button onClick={() => deletePair(idx)} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Delete</button>
+                  </div>
+                ))}
+              </div>
+              <div className="max-h-40 overflow-auto rounded border border-zinc-700 p-2 text-xs space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-300">Validation points: {validationPairs.length}</span>
+                  <button onClick={clearValidationPairs} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Clear Validation</button>
+                </div>
+                {validationPairs.map((p, idx) => (
+                  <div key={`val-row-${idx}`} className="flex items-center justify-between gap-2">
+                    <span>V{idx + 1} W[{p.world.map((v) => Number(v).toFixed(2)).join(",")}] → P[{p.pixel.map((v) => Number(v).toFixed(1)).join(",")}]</span>
+                    <button onClick={() => deleteValidationPair(idx)} className="rounded border border-zinc-600 px-2 py-0.5 text-[11px] hover:bg-zinc-800">Delete</button>
                   </div>
                 ))}
               </div>
@@ -1510,7 +1821,7 @@ export default function Home() {
                 <button onClick={() => dwgInputRef.current?.click()} className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50">Upload CAD</button>
                 <button onClick={runHeadlessSolve} className="rounded border border-amber-700 bg-amber-900/40 px-3 py-2 text-sm hover:bg-amber-800/50">Solve PnP from Pairs</button>
                 <button
-                  disabled={jobLoading || !getStageReadiness("ground-plane").enabled}
+                  disabled={jobLoading || sequenceRunning || !getStageReadiness("ground-plane").enabled}
                   onClick={() => runStageCard("ground-plane")}
                   className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
                 >
@@ -1521,7 +1832,7 @@ export default function Home() {
               <ProjectedCadViewer
                 segments={segments}
                 onPickWorld={handleCadPick}
-                pickedWorldPoints={correspondences.map((c) => c.world)}
+                pickedWorldPoints={[...correspondences.map((c) => c.world), ...validationPairs.map((p) => p.world)]}
                 title={pendingImagePoint ? "Pick CAD point for selected image point" : "First select image point, then CAD point"}
               />
               <label className="block text-xs">Ground Plane Output Path
@@ -1530,6 +1841,40 @@ export default function Home() {
               {renderStageStatus("ground-plane")}
             </div>
           </div>
+        </section>
+
+        <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
+          <h2 className="text-xl font-semibold">Live Validation: Pixel ↔ World Accuracy</h2>
+          <p className="text-xs text-zinc-400">
+            Real-world test flow: capture snapshot, switch to Validation pick mode, add known test points, run validation, then review world and reprojection errors.
+          </p>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-3">
+              <label className="block text-xs">Calibration YAML Path
+                <input value={latestCalibrationYamlPath} onChange={(e) => setLatestCalibrationYamlPath(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={runLiveValidation} className="rounded border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm hover:bg-emerald-800/50">Run Live Validation</button>
+                <button onClick={clearValidationPairs} className="rounded border border-zinc-600 px-3 py-2 text-sm hover:bg-zinc-800">Clear Validation Points</button>
+              </div>
+              <p className="text-xs text-zinc-300">{validationStatus}</p>
+            </div>
+            <div className="space-y-2 rounded border border-zinc-700 p-3 text-xs">
+              <div>Validation points: {validationPairs.length}</div>
+              <div>Samples used: {validationResult?.sample_count ?? 0}</div>
+              <div>World mean error (m): {typeof validationResult?.metrics?.world_error?.mean === "number" ? validationResult.metrics.world_error.mean.toFixed(4) : "n/a"}</div>
+              <div>World RMSE (m): {typeof validationResult?.metrics?.world_error?.rmse === "number" ? validationResult.metrics.world_error.rmse.toFixed(4) : "n/a"}</div>
+              <div>World max error (m): {typeof validationResult?.metrics?.world_error?.max === "number" ? validationResult.metrics.world_error.max.toFixed(4) : "n/a"}</div>
+              <div>Reprojection mean (px): {typeof validationResult?.metrics?.reprojection_error_px?.mean === "number" ? validationResult.metrics.reprojection_error_px.mean.toFixed(2) : "n/a"}</div>
+              <div>Reprojection RMSE (px): {typeof validationResult?.metrics?.reprojection_error_px?.rmse === "number" ? validationResult.metrics.reprojection_error_px.rmse.toFixed(2) : "n/a"}</div>
+              <div>Reprojection max (px): {typeof validationResult?.metrics?.reprojection_error_px?.max === "number" ? validationResult.metrics.reprojection_error_px.max.toFixed(2) : "n/a"}</div>
+            </div>
+          </div>
+          {validationResult?.details?.length ? (
+            <pre className="max-h-48 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-300">
+              {JSON.stringify(validationResult.details.slice(0, 20), null, 2)}
+            </pre>
+          ) : null}
         </section>
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
@@ -1612,7 +1957,7 @@ export default function Home() {
                 <input value={stageOutputs["z-mapping"] || ""} onChange={(e) => setStageOutput("z-mapping", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
               </label>
               <button
-                disabled={jobLoading || !getStageReadiness("z-mapping").enabled}
+                disabled={jobLoading || sequenceRunning || !getStageReadiness("z-mapping").enabled}
                 onClick={() => runStageCard("z-mapping")}
                 className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
               >
@@ -1646,7 +1991,7 @@ export default function Home() {
                 <input value={stageOutputs["cad-3d-dwg"] || ""} onChange={(e) => setStageOutput("cad-3d-dwg", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
               </label>
               <button
-                disabled={jobLoading || !getStageReadiness("cad-3d-dwg").enabled}
+                disabled={jobLoading || sequenceRunning || !getStageReadiness("cad-3d-dwg").enabled}
                 onClick={() => runStageCard("cad-3d-dwg")}
                 className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm hover:bg-cyan-800/50 disabled:opacity-40"
               >
@@ -1689,7 +2034,7 @@ export default function Home() {
               <input value={stageOutputs[stage] || ""} onChange={(e) => setStageOutput(stage, e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
             </label>
             <button
-              disabled={jobLoading || !getStageReadiness(stage).enabled}
+              disabled={jobLoading || sequenceRunning || !getStageReadiness(stage).enabled}
               onClick={() => runStageCard(stage)}
               className="rounded border border-cyan-700 bg-cyan-900/40 px-3 py-2 text-sm capitalize hover:bg-cyan-800/50 disabled:opacity-40"
             >

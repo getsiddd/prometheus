@@ -1,8 +1,11 @@
+"""Intrinsic calibration helpers for checkerboard-based camera calibration."""
+
 import cv2
 import numpy as np
 
 
 def parse_checkerboard(spec: str):
+    """Parse checkerboard inner-corner spec like ``9x6`` into ``(width, height)``."""
     parts = spec.lower().split("x")
     if len(parts) != 2:
         raise ValueError("Checkerboard spec must be like '9x6'")
@@ -10,6 +13,7 @@ def parse_checkerboard(spec: str):
 
 
 def calibrate_intrinsics(source, checkerboard=(9, 6), square_size=0.024, min_samples=20):
+    """Interactively capture checkerboard observations and solve camera intrinsics."""
     w, h = checkerboard
 
     objp = np.zeros((w * h, 3), np.float32)
@@ -73,9 +77,11 @@ def calibrate_intrinsics(source, checkerboard=(9, 6), square_size=0.024, min_sam
 
 
 def load_intrinsics(npz_path):
+    """Load intrinsic matrix, distortion coefficients, and RMS from ``.npz``."""
     data = np.load(npz_path)
     return data["K"], data["D"], float(data.get("rms", np.array(0.0)))
 
 
 def save_intrinsics(npz_path, K, D, rms=0.0):
+    """Save intrinsic matrix, distortion coefficients, and RMS to ``.npz``."""
     np.savez(npz_path, K=K, D=D, rms=np.array([rms], dtype=np.float32))

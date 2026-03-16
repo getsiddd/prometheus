@@ -1,3 +1,5 @@
+"""Interactive desktop calibration pipeline for CAD-assisted camera-to-world mapping."""
+
 import argparse
 import os
 import time
@@ -22,6 +24,7 @@ from intrinsic import (
 
 
 def capture_reference_frame(source):
+    """Show live camera view and return a user-approved reference frame."""
     cv2.namedWindow("Capture Reference", cv2.WINDOW_NORMAL)
     last_frame = None
 
@@ -60,6 +63,7 @@ def capture_reference_frame(source):
 
 
 def collect_correspondences_3d(ref_frame, segments3d, vertices3d):
+    """Collect matched 3D CAD points and 2D image points through interactive picking."""
     object_points = []
     image_points = []
     view_state = CADViewState()
@@ -70,6 +74,7 @@ def collect_correspondences_3d(ref_frame, segments3d, vertices3d):
     cad_dirty = True
 
     def find_projected(world_xyz):
+        """Return current projected screen position for a selected CAD world vertex."""
         wx, wy, wz = world_xyz
         for vw, screen_xy, _ in projected_vertices:
             if (
@@ -81,6 +86,7 @@ def collect_correspondences_3d(ref_frame, segments3d, vertices3d):
         return None
 
     def on_cad_click(event, x, y, *_):
+        """Handle CAD window click and queue nearest snapped 3D world point."""
         if event != cv2.EVENT_LBUTTONDOWN:
             return
         snapped = nearest_vertex_world_3d((x, y), projected_vertices, max_px=25)
@@ -91,6 +97,7 @@ def collect_correspondences_3d(ref_frame, segments3d, vertices3d):
         cad_dirty = True
 
     def on_img_click(event, x, y, *_):
+        """Handle image click and finalize a CAD-world to image-pixel correspondence pair."""
         if event != cv2.EVENT_LBUTTONDOWN:
             return
         if not selected_world_pending:
@@ -244,6 +251,7 @@ def collect_correspondences_3d(ref_frame, segments3d, vertices3d):
 
 
 def compute_pose_pnp(object_points_xyz, image_points, K, D):
+    """Estimate camera pose from 3D-2D correspondences and compute reprojection RMSE."""
     ok, rvec, tvec, inliers = cv2.solvePnPRansac(
         object_points_xyz,
         image_points,
@@ -276,6 +284,7 @@ def compute_pose_pnp(object_points_xyz, image_points, K, D):
 
 
 def save_calibration(output_yaml, dwg_path, K, D, rvec, tvec, rmse, inliers, object_points, image_points):
+    """Write solved calibration state and correspondences to YAML."""
     data = {
         "timestamp": int(time.time()),
         "dwg_path": os.path.abspath(dwg_path),
@@ -304,6 +313,7 @@ def save_calibration(output_yaml, dwg_path, K, D, rvec, tvec, rmse, inliers, obj
 
 
 def build_projected_segments_3d(segments3d, rvec, tvec, K, D):
+    """Project CAD 3D line segments into image pixel coordinates using solved pose."""
     points = []
     for a, b in segments3d:
         points.append(a)
@@ -329,6 +339,7 @@ def build_projected_segments_3d(segments3d, rvec, tvec, K, D):
 
 
 def draw_projected_lines(frame, lines, color=(0, 255, 0)):
+    """Draw projected CAD overlay lines while skipping lines far outside the frame."""
     h, w = frame.shape[:2]
     for p1, p2 in lines:
         x1, y1 = p1
@@ -344,6 +355,7 @@ def draw_projected_lines(frame, lines, color=(0, 255, 0)):
 
 
 def pixel_to_world_on_plane_z0(mx, my, K, D, rvec, tvec):
+    """Back-project an image pixel onto the world plane ``z=0`` using camera pose."""
     R, _ = cv2.Rodrigues(rvec)
     R_inv = R.T
 
@@ -365,9 +377,11 @@ def pixel_to_world_on_plane_z0(mx, my, K, D, rvec, tvec):
 
 
 def live_overlay_3d(source, K, D, rvec, tvec, segments3d, display_scale=1.0, max_fps=30):
+    """Render live camera frames with projected CAD overlay and pixel-to-world readout."""
     state = {"mouse": (0, 0)}
 
     def mouse_cb(event, x, y, *_):
+        """Track the current mouse position for world-coordinate inspection."""
         if event == cv2.EVENT_MOUSEMOVE:
             state["mouse"] = (x, y)
 
@@ -431,6 +445,7 @@ def live_overlay_3d(source, K, D, rvec, tvec, segments3d, display_scale=1.0, max
 
 
 def main():
+    """Run the complete interactive calibration2 workflow."""
     parser = argparse.ArgumentParser(description="Calibration2: 3D DWG camera calibration with interactive CAD rotation")
     parser.add_argument("--dwg", required=True, help="Path to DWG CAD file")
     parser.add_argument("--source", default="0", help="Camera source (index, rtsp url, or video file)")

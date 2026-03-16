@@ -1,3 +1,5 @@
+"""Headless calibration backend commands used by the browser/API workflow."""
+
 import argparse
 import json
 import os
@@ -10,10 +12,12 @@ import yaml
 
 
 def parse_source(source: str):
+    """Parse numeric source strings as camera indices, otherwise keep as path/URL."""
     return int(source) if str(source).isdigit() else source
 
 
 def parse_checkerboard(spec: str):
+    """Parse checkerboard inner-corner spec like ``9x6`` into integer tuple."""
     parts = str(spec).lower().split("x")
     if len(parts) != 2:
         raise RuntimeError("Checkerboard must be like 9x6")
@@ -21,6 +25,7 @@ def parse_checkerboard(spec: str):
 
 
 def snapshot(source: str, output_path: str):
+    """Capture and save a single frame from a camera/video source."""
     src = parse_source(source)
     cap = cv2.VideoCapture(src)
 
@@ -45,6 +50,7 @@ def snapshot(source: str, output_path: str):
 
 
 def load_intrinsics(npz_path: str, fallback_size=(1280, 720)):
+    """Load intrinsics from file or return a simple fallback pinhole model."""
     if npz_path and os.path.exists(npz_path):
         data = np.load(npz_path)
         K = data["K"]
@@ -61,6 +67,7 @@ def load_intrinsics(npz_path: str, fallback_size=(1280, 720)):
 
 
 def solve_pnp(correspondences: List[dict], intrinsics_path: str, output_yaml: str):
+    """Solve camera pose from correspondences and save a YAML result payload."""
     object_points = []
     image_points = []
 
@@ -124,6 +131,7 @@ def solve_pnp(correspondences: List[dict], intrinsics_path: str, output_yaml: st
 
 
 def detect_checkerboard(image_path: str, checkerboard_spec: str):
+    """Detect checkerboard corners in an image and return detection metadata."""
     if not os.path.exists(image_path):
         raise RuntimeError(f"Image not found: {image_path}")
 
@@ -144,6 +152,7 @@ def detect_checkerboard(image_path: str, checkerboard_spec: str):
 
 
 def solve_intrinsic(images_dir: str, checkerboard_spec: str, square_size: float, output_npz: str):
+    """Solve camera intrinsics from checkerboard image directory and save ``.npz`` output."""
     if not os.path.isdir(images_dir):
         raise RuntimeError(f"Images directory not found: {images_dir}")
 
@@ -213,6 +222,7 @@ def solve_intrinsic(images_dir: str, checkerboard_spec: str, square_size: float,
 
 
 def generate_checkerboard_pdf(checkerboard_spec: str, square_mm: float, output_pdf: str, margin_mm: float = 10.0):
+    """Generate an A3 landscape checkerboard PDF for intrinsic calibration capture."""
     try:
         from reportlab.lib import colors
         from reportlab.lib.units import mm
@@ -286,7 +296,148 @@ def generate_checkerboard_pdf(checkerboard_spec: str, square_mm: float, output_p
     }
 
 
+def _load_pose_and_intrinsics(calibration_yaml: str, intrinsics_path: str = ""):
+    """Load pose and intrinsics for validation from calibration YAML and optional NPZ intrinsics."""
+    if not calibration_yaml or not os.path.exists(calibration_yaml):
+        raise RuntimeError(f"Calibration YAML not found: {calibration_yaml}")
+
+    with open(calibration_yaml, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    pose = data.get("pose") or {}
+    intrinsic = data.get("intrinsic") or {}
+
+    rvec_raw = pose.get("rvec")
+    tvec_raw = pose.get("tvec")
+    if rvec_raw is None or tvec_raw is None:
+        raise RuntimeError("Calibration YAML does not contain pose.rvec/tvec")
+
+    rvec = np.array(rvec_raw, dtype=np.float64).reshape(-1)
+    tvec = np.array(tvec_raw, dtype=np.float64).reshape(-1)
+    if rvec.size != 3 or tvec.size != 3:
+        raise RuntimeError("pose.rvec and pose.tvec must each contain 3 values")
+
+    if intrinsics_path:
+        K, D = load_intrinsics(intrinsics_path)
+    else:
+        K_raw = intrinsic.get("K")
+        D_raw = intrinsic.get("D")
+        if K_raw is None or D_raw is None:
+            raise RuntimeError("Calibration YAML does not contain intrinsic.K/D and no --intrinsics path was provided")
+        K = np.array(K_raw, dtype=np.float64)
+        D = np.array(D_raw, dtype=np.float64)
+
+    if K.shape != (3, 3):
+        raise RuntimeError(f"Intrinsic matrix K must be 3x3, got {K.shape}")
+
+    D = np.array(D, dtype=np.float64)
+    if D.ndim == 1:
+        D = D.reshape(1, -1)
+
+    return K, D, rvec.reshape(3, 1), tvec.reshape(3, 1)
+
+
+def _pixel_to_world_on_plane(mx, my, K, D, rvec, tvec, plane_z=0.0):
+    """Back-project an image pixel to a target world Z plane."""
+    R, _ = cv2.Rodrigues(rvec)
+    R_inv = R.T
+
+    pt = np.array([[[mx, my]]], dtype=np.float64)
+    pt_undist = cv2.undistortPoints(pt, K, D)
+    x_u, y_u = pt_undist.reshape(2)
+    ray_cam = np.array([x_u, y_u, 1.0], dtype=np.float64)
+    ray_cam = ray_cam / np.linalg.norm(ray_cam)
+
+    ray_world = R_inv @ ray_cam
+    cam_center_world = -R_inv @ tvec.reshape(3)
+
+    if abs(ray_world[2]) < 1e-9:
+        return None
+
+    t = (float(plane_z) - cam_center_world[2]) / ray_world[2]
+    return cam_center_world + t * ray_world
+
+
+def _world_to_pixel(world_xyz, K, D, rvec, tvec):
+    """Project a world XYZ point into pixel coordinates."""
+    arr = np.array([[float(world_xyz[0]), float(world_xyz[1]), float(world_xyz[2])]], dtype=np.float32)
+    projected, _ = cv2.projectPoints(arr, rvec, tvec, K, D)
+    u, v = projected.reshape(-1, 2)[0]
+    return np.array([float(u), float(v)], dtype=np.float64)
+
+
+def _metric_summary(values):
+    """Compute mean, RMSE, and max statistics for scalar error values."""
+    arr = np.array(values, dtype=np.float64)
+    return {
+        "mean": float(np.mean(arr)),
+        "rmse": float(np.sqrt(np.mean(np.square(arr)))),
+        "max": float(np.max(arr)),
+    }
+
+
+def validate_mapping(validation_points: List[dict], calibration_yaml: str, intrinsics_path: str = ""):
+    """Validate pixel-to-world and world-to-pixel accuracy using known test points."""
+    if not isinstance(validation_points, list) or len(validation_points) == 0:
+        raise RuntimeError("validation_points must be a non-empty list")
+
+    K, D, rvec, tvec = _load_pose_and_intrinsics(calibration_yaml, intrinsics_path)
+
+    details = []
+    world_errors = []
+    reproj_errors = []
+
+    for idx, item in enumerate(validation_points):
+        world_raw = item.get("world")
+        pixel_raw = item.get("pixel")
+        if not world_raw or not pixel_raw or len(world_raw) != 3 or len(pixel_raw) != 2:
+            continue
+
+        world_gt = np.array([float(world_raw[0]), float(world_raw[1]), float(world_raw[2])], dtype=np.float64)
+        pixel_obs = np.array([float(pixel_raw[0]), float(pixel_raw[1])], dtype=np.float64)
+        plane_z = float(item.get("plane_z", world_gt[2]))
+
+        world_est = _pixel_to_world_on_plane(pixel_obs[0], pixel_obs[1], K, D, rvec, tvec, plane_z=plane_z)
+        if world_est is None:
+            continue
+
+        pixel_reproj = _world_to_pixel(world_gt, K, D, rvec, tvec)
+
+        world_error = float(np.linalg.norm(world_est - world_gt))
+        reproj_error = float(np.linalg.norm(pixel_reproj - pixel_obs))
+
+        world_errors.append(world_error)
+        reproj_errors.append(reproj_error)
+
+        details.append(
+            {
+                "index": idx,
+                "pixel_observed": [float(pixel_obs[0]), float(pixel_obs[1])],
+                "world_expected": [float(world_gt[0]), float(world_gt[1]), float(world_gt[2])],
+                "world_estimated": [float(world_est[0]), float(world_est[1]), float(world_est[2])],
+                "world_error": world_error,
+                "pixel_reprojected": [float(pixel_reproj[0]), float(pixel_reproj[1])],
+                "reprojection_error_px": reproj_error,
+            }
+        )
+
+    if len(details) == 0:
+        raise RuntimeError("No valid validation points were provided")
+
+    return {
+        "mode": "web_validation",
+        "calibration_yaml": calibration_yaml,
+        "sample_count": len(details),
+        "metrics": {
+            "world_error": _metric_summary(world_errors),
+            "reprojection_error_px": _metric_summary(reproj_errors),
+        },
+        "details": details,
+    }
+
+
 def main():
+    """CLI entrypoint that dispatches snapshot, solve, detect, and PDF subcommands."""
     parser = argparse.ArgumentParser(description="Calibration2 web backend helper (headless)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -315,6 +466,11 @@ def main():
     p_pdf.add_argument("--margin-mm", type=float, default=10.0)
     p_pdf.add_argument("--output-pdf", required=True)
 
+    p_validate = sub.add_parser("validate-mapping")
+    p_validate.add_argument("--validation-json", required=True)
+    p_validate.add_argument("--calibration-yaml", required=True)
+    p_validate.add_argument("--intrinsics", default="")
+
     args = parser.parse_args()
 
     if args.cmd == "snapshot":
@@ -341,6 +497,12 @@ def main():
     if args.cmd == "checkerboard-pdf":
         result = generate_checkerboard_pdf(args.checkerboard, args.square_mm, args.output_pdf, args.margin_mm)
         print(json.dumps({"ok": True, "result": result, "output": args.output_pdf}))
+        return
+
+    if args.cmd == "validate-mapping":
+        points = json.loads(args.validation_json)
+        result = validate_mapping(points, args.calibration_yaml, args.intrinsics)
+        print(json.dumps({"ok": True, "result": result}))
         return
 
 

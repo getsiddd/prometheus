@@ -977,18 +977,15 @@ export function CalibrationConsole({
 
       const solvedCameras = projectCameras.filter((camera) => {
         const workspace = workspaces[camera.id] || {};
-        return Boolean(workspace.latestCalibrationYamlPath && workspace.snapshotPath);
+        return Boolean(workspace.latestCalibrationYamlPath);
       });
 
       if (!solvedCameras.length) {
-        throw new Error("Need at least one solved camera with snapshot before auto placement.");
+        throw new Error("Need at least one solved camera (with calibration YAML) before auto placement.");
       }
 
       const targetWorkspace = workspaces[activeProjectCameraId] || {};
       const targetSnapshot = String(targetWorkspace.snapshotPath || "").trim();
-      if (!targetSnapshot) {
-        throw new Error("Capture a snapshot for current camera first.");
-      }
 
       const preferredAnchor = solvedCameras.find((camera) => camera.id === "cam-1") || solvedCameras[0];
       const anchorCameraId = preferredAnchor.id;
@@ -1000,31 +997,58 @@ export function CalibrationConsole({
 
       const camerasPayload = [];
       const added = new Set();
+
+      const syncedSnapshotPathByCamera = {};
+      for (const camera of solvedCameras) {
+        const workspace = workspaces[camera.id] || {};
+        const syncedPath = await captureSyncedSnapshotForCamera(camera, workspace);
+        const snapshotPathValue = String(syncedPath || workspace.snapshotPath || "").trim();
+        if (!snapshotPathValue) {
+          continue;
+        }
+        syncedSnapshotPathByCamera[camera.id] = snapshotPathValue;
+        workspaces[camera.id] = {
+          ...workspace,
+          snapshotPath: snapshotPathValue,
+        };
+      }
+
       const anchorWorkspace = workspaces[anchorCameraId] || {};
+      const anchorSnapshot = String(syncedSnapshotPathByCamera[anchorCameraId] || anchorWorkspace.snapshotPath || "").trim();
+      if (!anchorSnapshot) {
+        throw new Error(`Could not capture synchronized snapshot for anchor camera '${anchorCameraId}'.`);
+      }
       camerasPayload.push({
         cameraId: anchorCameraId,
-        snapshotPath: anchorWorkspace.snapshotPath,
+        snapshotPath: anchorSnapshot,
       });
       added.add(anchorCameraId);
 
       for (const camera of solvedCameras) {
-        const workspace = workspaces[camera.id] || {};
-        if (!workspace.snapshotPath || added.has(camera.id)) {
+        const snapshotPathValue = String(syncedSnapshotPathByCamera[camera.id] || "").trim();
+        if (!snapshotPathValue || added.has(camera.id)) {
           continue;
         }
         camerasPayload.push({
           cameraId: camera.id,
-          snapshotPath: workspace.snapshotPath,
+          snapshotPath: snapshotPathValue,
         });
         added.add(camera.id);
       }
 
       if (!added.has(activeProjectCameraId)) {
-        camerasPayload.push({
-          cameraId: activeProjectCameraId,
-          snapshotPath: targetSnapshot,
-        });
+        const fallbackTargetSnapshot = String(
+          syncedSnapshotPathByCamera[activeProjectCameraId] || targetSnapshot || ""
+        ).trim();
+        if (fallbackTargetSnapshot) {
+          camerasPayload.push({
+            cameraId: activeProjectCameraId,
+            snapshotPath: fallbackTargetSnapshot,
+          });
+        }
       }
+
+      setCameraWorkspaces({ ...workspaces });
 
       if (camerasPayload.length < 2) {
         throw new Error("Need at least 2 camera snapshots for feature matching.");
@@ -1156,7 +1180,7 @@ export function CalibrationConsole({
         `Auto-placed ${autoPairs.length} marker(s) on '${activeProjectCameraId}' using whole-image feature extraction + geometric transfer. Methods: ${methodSummary || matching?.method_requested || "auto"}.`
       );
       setProjectStatus(
-        `Feature source: anchor '${anchorCameraId}', solved cameras used: ${Array.from(added).join(", ")}. Marker sources: ${sourceSummary || "n/a"}.`
+        `Feature source: synchronized snapshots. Anchor '${anchorCameraId}', solved cameras used: ${Array.from(added).join(", ")}. Marker sources: ${sourceSummary || "n/a"}.`
       );
       return true;
     } catch (err) {
@@ -2498,8 +2522,9 @@ export function CalibrationConsole({
       throw new Error(saveData?.error || "Snapshot save failed");
     }
     const capturedUrl = saveData?.snapshotDataUrl || imageDataUrl;
+    const outputPath = String(saveData?.outputPath || "");
     setSnapshotDataUrl(capturedUrl);
-    setSnapshotPath(saveData?.outputPath || "");
+    setSnapshotPath(outputPath);
     setSnapshotStatus(
       label
         ? `Reference frame captured (${label}): ${saveData?.outputPath || "saved"}`
@@ -2512,7 +2537,7 @@ export function CalibrationConsole({
     setAutoGroundImageSize({ width: 1, height: 1 });
     setPendingAutoGroundIndex(null);
     setAutoGroundStatus("Reference frame ready. Auto ground prep will continue in background.");
-    return capturedUrl;
+    return { capturedUrl, outputPath };
   }
 
   function captureRtspFrameFromLiveFeedElement() {
@@ -2544,12 +2569,14 @@ export function CalibrationConsole({
     try {
       if (sourceMode === "webcam") {
         const imageDataUrl = captureWebcamFrame();
-        return await saveSnapshotDataUrl(imageDataUrl, "webcam");
+        const saved = await saveSnapshotDataUrl(imageDataUrl, "webcam");
+        return saved?.capturedUrl || "";
       }
 
       const liveImageDataUrl = captureRtspFrameFromLiveFeedElement();
       if (liveImageDataUrl) {
-        return await saveSnapshotDataUrl(liveImageDataUrl, "live feed");
+        const saved = await saveSnapshotDataUrl(liveImageDataUrl, "live feed");
+        return saved?.capturedUrl || "";
       }
 
       if (!sourceUrl) {
@@ -2580,6 +2607,49 @@ export function CalibrationConsole({
     } catch (err) {
       setSnapshotStatus(err instanceof Error ? err.message : "Snapshot capture failed");
       return "";
+    }
+  }
+
+  async function captureSyncedSnapshotForCamera(camera, workspace = {}) {
+    const cameraId = String(camera?.id || "").trim();
+    if (!cameraId) {
+      return "";
+    }
+
+    const cameraSourceMode = String(workspace?.sourceMode || camera?.sourceMode || "rtsp");
+    const cameraSourceUrl = String(workspace?.sourceUrl || camera?.sourceUrl || "").trim();
+
+    try {
+      if (cameraId === activeProjectCameraId) {
+        if (cameraSourceMode === "webcam") {
+          const frameDataUrl = captureWebcamFrame();
+          const saved = await saveSnapshotDataUrl(frameDataUrl, "webcam-live-sync");
+          return String(saved?.outputPath || workspace?.snapshotPath || "").trim();
+        }
+
+        const liveFrame = captureRtspFrameFromLiveFeedElement();
+        if (liveFrame) {
+          const saved = await saveSnapshotDataUrl(liveFrame, "rtsp-live-sync");
+          return String(saved?.outputPath || workspace?.snapshotPath || "").trim();
+        }
+      }
+
+      if (!cameraSourceUrl || cameraSourceMode === "webcam") {
+        return String(workspace?.snapshotPath || "").trim();
+      }
+
+      const res = await fetch("/api/calibration/web/snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceUrl: cameraSourceUrl }),
+      });
+      const data = await readJsonResponseSafe(res);
+      if (!res.ok) {
+        return String(workspace?.snapshotPath || "").trim();
+      }
+      return String(data?.outputPath || workspace?.snapshotPath || "").trim();
+    } catch {
+      return String(workspace?.snapshotPath || "").trim();
     }
   }
 

@@ -1001,7 +1001,14 @@ export function CalibrationConsole({
 
       const syncedSnapshotByCamera = {};
       const syncedPreviewFrames = [];
-      for (const camera of solvedCameras) {
+      const syncCandidates = projectCameras.filter((camera) => {
+        const workspace = workspaces[camera.id] || {};
+        const hasSource = Boolean(String(workspace.sourceUrl || camera.sourceUrl || "").trim());
+        const hasSnapshot = Boolean(String(workspace.snapshotPath || "").trim());
+        return hasSource || hasSnapshot || camera.id === activeProjectCameraId || solvedCameras.some((item) => item.id === camera.id);
+      });
+
+      for (const camera of syncCandidates) {
         const workspace = workspaces[camera.id] || {};
         const synced = await captureSyncedSnapshotForCamera(camera, workspace);
         const snapshotPathValue = String(synced?.outputPath || workspace.snapshotPath || "").trim();
@@ -1042,7 +1049,13 @@ export function CalibrationConsole({
       });
       added.add(anchorCameraId);
 
-      for (const camera of solvedCameras) {
+      const matchingCandidates = projectCameras.filter((camera) => {
+        const isSolved = solvedCameras.some((item) => item.id === camera.id);
+        const isActive = camera.id === activeProjectCameraId;
+        return isSolved || isActive;
+      });
+
+      for (const camera of matchingCandidates) {
         const snapshotPathValue = String(syncedSnapshotByCamera[camera.id]?.outputPath || "").trim();
         if (!snapshotPathValue || added.has(camera.id)) {
           continue;
@@ -1068,6 +1081,9 @@ export function CalibrationConsole({
 
       setCameraWorkspaces({ ...workspaces });
       setSyncedMatchFrames(syncedPreviewFrames.sort((a, b) => String(a.cameraId).localeCompare(String(b.cameraId))));
+      if (syncedPreviewFrames.length > 0) {
+        setProjectStatus(`Synced preview frames captured: ${syncedPreviewFrames.length}. Rotate in Step 2 preview panel.`);
+      }
 
       if (camerasPayload.length < 2) {
         throw new Error("Need at least 2 camera snapshots for feature matching.");

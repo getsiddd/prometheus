@@ -175,6 +175,7 @@ export function CalibrationConsole({
   const [liveKeypointsImageSize, setLiveKeypointsImageSize] = useState({ width: 1, height: 1 });
   const [liveKeypointsRunning, setLiveKeypointsRunning] = useState(false);
   const [liveKeypointsDebug, setLiveKeypointsDebug] = useState({ count: 0, source: "idle" });
+  const [syncedMatchFrames, setSyncedMatchFrames] = useState([]);
   const liveKeypointsPollRef = useRef(null);
   const liveKeypointsLastTsRef = useRef(0);
   const autoGroundPrepRunningRef = useRef(false);
@@ -998,15 +999,32 @@ export function CalibrationConsole({
       const camerasPayload = [];
       const added = new Set();
 
-      const syncedSnapshotPathByCamera = {};
+      const syncedSnapshotByCamera = {};
+      const syncedPreviewFrames = [];
       for (const camera of solvedCameras) {
         const workspace = workspaces[camera.id] || {};
-        const syncedPath = await captureSyncedSnapshotForCamera(camera, workspace);
-        const snapshotPathValue = String(syncedPath || workspace.snapshotPath || "").trim();
+        const synced = await captureSyncedSnapshotForCamera(camera, workspace);
+        const snapshotPathValue = String(synced?.outputPath || workspace.snapshotPath || "").trim();
+        const snapshotDataUrlValue = String(synced?.snapshotDataUrl || "").trim();
         if (!snapshotPathValue) {
           continue;
         }
-        syncedSnapshotPathByCamera[camera.id] = snapshotPathValue;
+        syncedSnapshotByCamera[camera.id] = {
+          outputPath: snapshotPathValue,
+          snapshotDataUrl: snapshotDataUrlValue,
+          source: String(synced?.source || "snapshot"),
+          capturedAt: Number(synced?.capturedAt || Date.now()),
+        };
+        if (snapshotDataUrlValue) {
+          syncedPreviewFrames.push({
+            cameraId: String(camera.id),
+            cameraName: String(camera.name || camera.id || "Camera"),
+            snapshotDataUrl: snapshotDataUrlValue,
+            outputPath: snapshotPathValue,
+            source: String(synced?.source || "snapshot"),
+            capturedAt: Number(synced?.capturedAt || Date.now()),
+          });
+        }
         workspaces[camera.id] = {
           ...workspace,
           snapshotPath: snapshotPathValue,
@@ -1014,7 +1032,7 @@ export function CalibrationConsole({
       }
 
       const anchorWorkspace = workspaces[anchorCameraId] || {};
-      const anchorSnapshot = String(syncedSnapshotPathByCamera[anchorCameraId] || anchorWorkspace.snapshotPath || "").trim();
+      const anchorSnapshot = String(syncedSnapshotByCamera[anchorCameraId]?.outputPath || anchorWorkspace.snapshotPath || "").trim();
       if (!anchorSnapshot) {
         throw new Error(`Could not capture synchronized snapshot for anchor camera '${anchorCameraId}'.`);
       }
@@ -1025,7 +1043,7 @@ export function CalibrationConsole({
       added.add(anchorCameraId);
 
       for (const camera of solvedCameras) {
-        const snapshotPathValue = String(syncedSnapshotPathByCamera[camera.id] || "").trim();
+        const snapshotPathValue = String(syncedSnapshotByCamera[camera.id]?.outputPath || "").trim();
         if (!snapshotPathValue || added.has(camera.id)) {
           continue;
         }
@@ -1038,7 +1056,7 @@ export function CalibrationConsole({
 
       if (!added.has(activeProjectCameraId)) {
         const fallbackTargetSnapshot = String(
-          syncedSnapshotPathByCamera[activeProjectCameraId] || targetSnapshot || ""
+          syncedSnapshotByCamera[activeProjectCameraId]?.outputPath || targetSnapshot || ""
         ).trim();
         if (fallbackTargetSnapshot) {
           camerasPayload.push({
@@ -1049,6 +1067,7 @@ export function CalibrationConsole({
       }
 
       setCameraWorkspaces({ ...workspaces });
+      setSyncedMatchFrames(syncedPreviewFrames.sort((a, b) => String(a.cameraId).localeCompare(String(b.cameraId))));
 
       if (camerasPayload.length < 2) {
         throw new Error("Need at least 2 camera snapshots for feature matching.");
@@ -2613,7 +2632,7 @@ export function CalibrationConsole({
   async function captureSyncedSnapshotForCamera(camera, workspace = {}) {
     const cameraId = String(camera?.id || "").trim();
     if (!cameraId) {
-      return "";
+      return { outputPath: "", snapshotDataUrl: "", source: "invalid-camera", capturedAt: Date.now() };
     }
 
     const cameraSourceMode = String(workspace?.sourceMode || camera?.sourceMode || "rtsp");
@@ -2624,18 +2643,33 @@ export function CalibrationConsole({
         if (cameraSourceMode === "webcam") {
           const frameDataUrl = captureWebcamFrame();
           const saved = await saveSnapshotDataUrl(frameDataUrl, "webcam-live-sync");
-          return String(saved?.outputPath || workspace?.snapshotPath || "").trim();
+          return {
+            outputPath: String(saved?.outputPath || workspace?.snapshotPath || "").trim(),
+            snapshotDataUrl: String(saved?.capturedUrl || frameDataUrl || ""),
+            source: "webcam-live-sync",
+            capturedAt: Date.now(),
+          };
         }
 
         const liveFrame = captureRtspFrameFromLiveFeedElement();
         if (liveFrame) {
           const saved = await saveSnapshotDataUrl(liveFrame, "rtsp-live-sync");
-          return String(saved?.outputPath || workspace?.snapshotPath || "").trim();
+          return {
+            outputPath: String(saved?.outputPath || workspace?.snapshotPath || "").trim(),
+            snapshotDataUrl: String(saved?.capturedUrl || liveFrame || ""),
+            source: "rtsp-live-sync",
+            capturedAt: Date.now(),
+          };
         }
       }
 
       if (!cameraSourceUrl || cameraSourceMode === "webcam") {
-        return String(workspace?.snapshotPath || "").trim();
+        return {
+          outputPath: String(workspace?.snapshotPath || "").trim(),
+          snapshotDataUrl: "",
+          source: "cached-workspace",
+          capturedAt: Date.now(),
+        };
       }
 
       const res = await fetch("/api/calibration/web/snapshot", {
@@ -2645,11 +2679,26 @@ export function CalibrationConsole({
       });
       const data = await readJsonResponseSafe(res);
       if (!res.ok) {
-        return String(workspace?.snapshotPath || "").trim();
+        return {
+          outputPath: String(workspace?.snapshotPath || "").trim(),
+          snapshotDataUrl: "",
+          source: "snapshot-api-fallback",
+          capturedAt: Date.now(),
+        };
       }
-      return String(data?.outputPath || workspace?.snapshotPath || "").trim();
+      return {
+        outputPath: String(data?.outputPath || workspace?.snapshotPath || "").trim(),
+        snapshotDataUrl: String(data?.snapshotDataUrl || ""),
+        source: "snapshot-api",
+        capturedAt: Date.now(),
+      };
     } catch {
-      return String(workspace?.snapshotPath || "").trim();
+      return {
+        outputPath: String(workspace?.snapshotPath || "").trim(),
+        snapshotDataUrl: "",
+        source: "capture-error-fallback",
+        capturedAt: Date.now(),
+      };
     }
   }
 
@@ -4327,6 +4376,7 @@ export function CalibrationConsole({
             liveKeypointsImageSize,
             liveKeypointsRunning,
             liveKeypointsDebug,
+            syncedMatchFrames,
           }}
           actions={{
             setGroundPickMode,

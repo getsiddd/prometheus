@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import CameraPositionPanel from "../CameraPositionPanel";
 import ProjectedCadViewer from "../ProjectedCadViewer";
 
@@ -46,7 +48,25 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     liveKeypointsImageSize = { width: 1, height: 1 },
     liveKeypointsRunning = false,
     liveKeypointsDebug = { count: 0, source: "idle" },
+    syncedMatchFrames = [],
   } = data;
+
+  const [syncedFrameIndex, setSyncedFrameIndex] = useState(0);
+  const frames = Array.isArray(syncedMatchFrames) ? syncedMatchFrames : [];
+
+  useEffect(() => {
+    if (!frames.length) {
+      if (syncedFrameIndex !== 0) {
+        setSyncedFrameIndex(0);
+      }
+      return;
+    }
+    if (syncedFrameIndex >= frames.length) {
+      setSyncedFrameIndex(0);
+    }
+  }, [frames.length, syncedFrameIndex]);
+
+  const currentSyncedFrame = frames.length ? frames[syncedFrameIndex] : null;
 
   const {
     setGroundPickMode,
@@ -345,6 +365,37 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
           <div className="flex flex-wrap gap-2">
             <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Reference Frame</button>
           </div>
+          {currentSyncedFrame ? (
+            <div className="rounded border border-zinc-700 bg-zinc-950/40 p-2 text-[11px] text-zinc-300 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span>
+                  Synced match frame {syncedFrameIndex + 1}/{frames.length} · {currentSyncedFrame.cameraName || currentSyncedFrame.cameraId}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSyncedFrameIndex((prev) => (frames.length ? (prev - 1 + frames.length) % frames.length : 0))}
+                    className="rounded border border-zinc-600 px-2 py-0.5 hover:bg-zinc-800"
+                  >
+                    Prev
+                  </button>
+                  <button
+                    onClick={() => setSyncedFrameIndex((prev) => (frames.length ? (prev + 1) % frames.length : 0))}
+                    className="rounded border border-zinc-600 px-2 py-0.5 hover:bg-zinc-800"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+              <div className="text-zinc-400 break-all">
+                source: {String(currentSyncedFrame.source || "snapshot")} · path: {String(currentSyncedFrame.outputPath || "")}
+              </div>
+              <img
+                src={currentSyncedFrame.snapshotDataUrl}
+                alt={`Synced match frame ${currentSyncedFrame.cameraId}`}
+                className="w-full max-h-[180px] rounded border border-zinc-700 object-contain bg-black"
+              />
+            </div>
+          ) : null}
           <p className="text-xs text-zinc-400">{snapshotStatus}</p>
           <p className={`text-xs ${autoGroundSuggestions.length ? "text-sky-300" : "text-zinc-400"}`}>{autoGroundStatus}</p>
           {autoGroundModelInfo ? (

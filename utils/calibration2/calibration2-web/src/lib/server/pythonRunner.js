@@ -5,15 +5,30 @@ function uniqueValues(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-function pythonCandidates() {
+function pythonCandidates(cwd) {
   const fromEnv = process.env.CALIBRATION_PYTHON;
   const fromVenv = process.env.VIRTUAL_ENV
     ? path.join(process.env.VIRTUAL_ENV, "bin", "python")
     : null;
 
+  const searchRoots = uniqueValues([
+    process.cwd(),
+    cwd,
+    path.resolve(cwd, ".."),
+    path.resolve(cwd, "../.."),
+    path.resolve(cwd, "../../.."),
+    path.resolve(cwd, "../../../.."),
+  ]);
+
+  const discoveredVenvs = searchRoots.flatMap((root) => [
+    path.join(root, ".venv", "bin", "python"),
+    path.join(root, "venv", "bin", "python"),
+  ]);
+
   return uniqueValues([
     fromEnv,
     fromVenv,
+    ...discoveredVenvs,
     "python3",
     "python",
   ]);
@@ -63,7 +78,7 @@ export async function runPython(args, options = {}) {
   const env = { ...process.env, PYTHONUNBUFFERED: "1", ...(options.env || {}) };
 
   const tried = [];
-  const candidates = pythonCandidates();
+  const candidates = pythonCandidates(cwd);
 
   for (const executable of candidates) {
     try {

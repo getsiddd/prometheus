@@ -2681,6 +2681,8 @@ export function CalibrationConsole({
       });
       const data = await readJsonResponseSafe(res);
       if (!res.ok) {
+        const msg = data?.error || `Feature extraction failed (HTTP ${res.status})`;
+        setSolveStatus(msg);
         return false;
       }
       const result = data?.result || data;
@@ -2691,10 +2693,13 @@ export function CalibrationConsole({
           height: Number(result.image_height || 1),
         });
         liveKeypointsLastTsRef.current = Date.now();
+        if (result.keypoints.length === 0) {
+          setSolveStatus("Feature extraction returned 0 points for this frame. Waiting for next frame...");
+        }
       }
       return true;
-    } catch (_) {
-      // non-critical: feature overlay is best-effort
+    } catch (err) {
+      setSolveStatus(err instanceof Error ? err.message : "Feature extraction error");
       return false;
     } finally {
       setLiveKeypointsRunning(false);

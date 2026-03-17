@@ -48,7 +48,7 @@ export async function POST(req) {
     const parsed = parseLastJson(executed.out);
     const result = parsed?.result || parsed;
 
-    return NextResponse.json({ ok: true, result });
+    return NextResponse.json({ ok: true, result, python: executed.executable || null });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Keypoint extraction failed" }, { status: 500 });
   } finally {

@@ -45,6 +45,7 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
     liveKeypoints = [],
     liveKeypointsImageSize = { width: 1, height: 1 },
     liveKeypointsRunning = false,
+    liveKeypointsDebug = { count: 0, source: "idle" },
   } = data;
 
   const {
@@ -334,6 +335,12 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
             run automatically while this step is active (before <em>Run Ground Plane Stage</em>).
             {liveKeypointsRunning ? <span className="ml-2 text-indigo-400">● extracting features…</span> : null}
             {liveKeypoints.length > 0 && !liveKeypointsRunning ? <span className="ml-2 text-indigo-300">{liveKeypoints.length} live features</span> : null}
+          </div>
+          <div className="inline-flex items-center gap-2 rounded border border-zinc-700 bg-zinc-950/60 px-2 py-1 text-[11px] text-zinc-300">
+            <span className="text-indigo-300">features</span>
+            <span>{Number(liveKeypointsDebug?.count ?? liveKeypoints.length ?? 0)}</span>
+            <span className="text-zinc-500">|</span>
+            <span className="text-cyan-300">{String(liveKeypointsDebug?.source || "unknown")}</span>
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={captureSnapshotWeb} className="rounded border border-indigo-700 bg-indigo-900/40 px-3 py-2 text-sm hover:bg-indigo-800/50">Capture Reference Frame</button>

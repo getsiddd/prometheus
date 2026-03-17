@@ -174,6 +174,7 @@ export function CalibrationConsole({
   const [liveKeypoints, setLiveKeypoints] = useState([]);
   const [liveKeypointsImageSize, setLiveKeypointsImageSize] = useState({ width: 1, height: 1 });
   const [liveKeypointsRunning, setLiveKeypointsRunning] = useState(false);
+  const [liveKeypointsDebug, setLiveKeypointsDebug] = useState({ count: 0, source: "idle" });
   const liveKeypointsPollRef = useRef(null);
   const liveKeypointsLastTsRef = useRef(0);
   const autoGroundPrepRunningRef = useRef(false);
@@ -2665,15 +2666,19 @@ export function CalibrationConsole({
   async function extractLiveKeypoints(frameDataUrl) {
     if (liveKeypointsRunning) return;
     let imageUrl = frameDataUrl;
+    let extractionSource = frameDataUrl ? "pre-captured" : "unknown";
     try {
       setLiveKeypointsRunning(true);
       if (!imageUrl) {
         if (sourceMode === "webcam") {
           imageUrl = captureWebcamFrame();
+          extractionSource = "webcam-live";
         } else {
           imageUrl = captureRtspFrameFromLiveFeedElement();
+          extractionSource = "rtsp-live";
         }
         if (!imageUrl) {
+          setLiveKeypointsDebug((prev) => ({ ...prev, source: `${extractionSource}-unavailable` }));
           return false;
         }
       }
@@ -2686,6 +2691,7 @@ export function CalibrationConsole({
       if (!res.ok) {
         const msg = data?.error || `Feature extraction failed (HTTP ${res.status})`;
         setSolveStatus(msg);
+        setLiveKeypointsDebug((prev) => ({ ...prev, source: `${extractionSource}-http-${res.status}` }));
         return false;
       }
       const result = data?.result || data;
@@ -2696,6 +2702,7 @@ export function CalibrationConsole({
           height: Number(result.image_height || 1),
         });
         liveKeypointsLastTsRef.current = Date.now();
+        setLiveKeypointsDebug({ count: result.keypoints.length, source: extractionSource });
         if (result.keypoints.length === 0) {
           setSolveStatus("Feature extraction returned 0 points for this frame. Waiting for next frame...");
         }
@@ -2703,6 +2710,7 @@ export function CalibrationConsole({
       return true;
     } catch (err) {
       setSolveStatus(err instanceof Error ? err.message : "Feature extraction error");
+      setLiveKeypointsDebug((prev) => ({ ...prev, source: `${extractionSource}-error` }));
       return false;
     } finally {
       setLiveKeypointsRunning(false);
@@ -4245,6 +4253,10 @@ export function CalibrationConsole({
             pnpSolveResult,
             cameraPosition,
             cameraIntrinsic,
+            liveKeypoints,
+            liveKeypointsImageSize,
+            liveKeypointsRunning,
+            liveKeypointsDebug,
           }}
           actions={{
             setGroundPickMode,

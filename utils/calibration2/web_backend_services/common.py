@@ -14,6 +14,27 @@ class CalibrationUtils:
     """Utility helpers reused by multiple backend calibration services."""
 
     @staticmethod
+    def extract_pose_section(data: dict):
+        """Return the best available pose-like section from calibration payload data."""
+        if not isinstance(data, dict):
+            return None
+
+        candidates = [
+            data.get("pose"),
+            data.get("fused_refined"),
+            data.get("pnp"),
+            data.get("homography"),
+            (data.get("result") or {}).get("pose") if isinstance(data.get("result"), dict) else None,
+            (data.get("result") or {}).get("fused_refined") if isinstance(data.get("result"), dict) else None,
+            (data.get("result") or {}).get("pnp") if isinstance(data.get("result"), dict) else None,
+        ]
+
+        for candidate in candidates:
+            if isinstance(candidate, dict) and candidate.get("rvec") is not None and candidate.get("tvec") is not None:
+                return candidate
+        return None
+
+    @staticmethod
     def parse_source(source: str):
         """Parse numeric source strings as camera indices, else keep as path/URL."""
         return int(source) if str(source).isdigit() else source
@@ -59,13 +80,16 @@ class CalibrationUtils:
         with open(calibration_yaml, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
-        pose = data.get("pose") or {}
+        pose = CalibrationUtils.extract_pose_section(data) or {}
         intrinsic = data.get("intrinsic") or {}
 
         rvec_raw = pose.get("rvec")
         tvec_raw = pose.get("tvec")
         if rvec_raw is None or tvec_raw is None:
-            raise RuntimeError("Calibration YAML does not contain pose.rvec/tvec")
+            raise RuntimeError(
+                "Calibration YAML does not contain usable pose vectors. "
+                "Expected one of: pose.rvec/tvec, fused_refined.rvec/tvec, pnp.rvec/tvec, or homography.rvec/tvec"
+            )
 
         rvec = np.array(rvec_raw, dtype=np.float64).reshape(-1)
         tvec = np.array(tvec_raw, dtype=np.float64).reshape(-1)

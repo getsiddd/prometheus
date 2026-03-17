@@ -25,6 +25,10 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
     snapshotDataUrl,
     jobLoading,
     sequenceRunning,
+    solvePercent,
+    solvePhase,
+    solveOutputLog,
+    solveMeta,
   } = data;
 
   const {
@@ -49,6 +53,8 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
 
   // ---- live checkerboard overlay (webcam mode) ----
   const overlayCanvasRef = useRef(null);
+  const detectCanvasRef = useRef(null);
+  const detectBusyRef = useRef(false);
   const [liveDetect, setLiveDetect] = useState({ found: false, corners: [] });
   const detectLoopRef = useRef(null);
 
@@ -62,16 +68,24 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
     function scheduleDetect() {
       detectLoopRef.current = setTimeout(async () => {
         const video = intrinsicVideoRef?.current;
-        if (!video || video.videoWidth === 0 || video.readyState < 2) {
+        if (!video || video.videoWidth === 0 || video.readyState < 2 || detectBusyRef.current) {
           scheduleDetect();
           return;
         }
+        detectBusyRef.current = true;
         try {
-          const tmp = document.createElement("canvas");
-          tmp.width = video.videoWidth;
-          tmp.height = video.videoHeight;
-          tmp.getContext("2d").drawImage(video, 0, 0);
-          const dataUrl = tmp.toDataURL("image/jpeg", 0.75);
+          if (!detectCanvasRef.current) {
+            detectCanvasRef.current = document.createElement("canvas");
+          }
+          const tmp = detectCanvasRef.current;
+          const maxSide = 640;
+          const scale = Math.min(1, maxSide / Math.max(video.videoWidth, video.videoHeight));
+          tmp.width = Math.max(1, Math.round(video.videoWidth * scale));
+          tmp.height = Math.max(1, Math.round(video.videoHeight * scale));
+          const tmpCtx = tmp.getContext("2d", { willReadFrequently: false });
+          tmpCtx.clearRect(0, 0, tmp.width, tmp.height);
+          tmpCtx.drawImage(video, 0, 0, tmp.width, tmp.height);
+          const dataUrl = tmp.toDataURL("image/jpeg", 0.55);
           const res = await fetch("/api/calibration/web/intrinsic/detect-live", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -87,12 +101,18 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
             });
           }
         } catch { /* ignore */ }
+        finally {
+          detectBusyRef.current = false;
+        }
         scheduleDetect();
-      }, 500); // ~2fps — lightweight polling
+      }, 120);
     }
 
     scheduleDetect();
-    return () => clearTimeout(detectLoopRef.current);
+    return () => {
+      clearTimeout(detectLoopRef.current);
+      detectBusyRef.current = false;
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceMode, checkerboard]);
 
@@ -106,14 +126,20 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
     if (!liveDetect.found || !liveDetect.corners.length) return;
     if (!video || video.videoWidth === 0) return;
 
-    // Scale corners from video native resolution to display size
-    const scaleX = canvas.width / (liveDetect.imgW || video.videoWidth);
-    const scaleY = canvas.height / (liveDetect.imgH || video.videoHeight);
+    const imgW = liveDetect.imgW || video.videoWidth;
+    const imgH = liveDetect.imgH || video.videoHeight;
+    const canvasW = canvas.width;
+    const canvasH = canvas.height;
+    const scale = Math.min(canvasW / imgW, canvasH / imgH);
+    const drawW = imgW * scale;
+    const drawH = imgH * scale;
+    const offsetX = (canvasW - drawW) / 2;
+    const offsetY = (canvasH - drawH) / 2;
 
     // Draw corner dots
     liveDetect.corners.forEach(([cx, cy], idx) => {
-      const x = cx * scaleX;
-      const y = cy * scaleY;
+      const x = offsetX + cx * scale;
+      const y = offsetY + cy * scale;
       const hue = Math.round((idx / liveDetect.corners.length) * 300);
       ctx.fillStyle = `hsl(${hue}, 100%, 60%)`;
       ctx.beginPath();
@@ -127,8 +153,8 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       liveDetect.corners.forEach(([cx, cy], idx) => {
-        const x = cx * scaleX;
-        const y = cy * scaleY;
+        const x = offsetX + cx * scale;
+        const y = offsetY + cy * scale;
         if (idx === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
@@ -147,6 +173,9 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
     : Number.isFinite(intrinsicSolveResult?.valid_image_count)
       ? intrinsicSolveResult.valid_image_count
       : null;
+  const stageOutputPath = typeof stageOutputIntrinsic === "string"
+    ? stageOutputIntrinsic
+    : stageOutputIntrinsic?.intrinsicsPath || stageOutputIntrinsic?.outputPath || "";
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
@@ -156,18 +185,18 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
         <div className="space-y-3">
           <div className="grid gap-2 sm:grid-cols-3">
             <label className="text-xs">Session ID
-              <input value={intrinsicSessionId} onChange={(e) => setIntrinsicSessionId(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
+              <input value={intrinsicSessionId ?? ""} onChange={(e) => setIntrinsicSessionId(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
             </label>
             <label className="text-xs">Checkerboard
-              <input value={checkerboard} onChange={(e) => setCheckerboard(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
+              <input value={checkerboard ?? ""} onChange={(e) => setCheckerboard(e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
             </label>
             <label className="text-xs">Square (m)
-              <input type="number" step="0.001" value={squareSize} onChange={(e) => setSquareSize(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
+              <input type="number" step="0.001" value={squareSize ?? ""} onChange={(e) => setSquareSize(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
             </label>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
             <label className="text-xs">Print Square (mm)
-              <input type="number" min={5} step="1" value={checkerboardSquareMm} onChange={(e) => setCheckerboardSquareMm(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
+              <input type="number" min={5} step="1" value={checkerboardSquareMm ?? ""} onChange={(e) => setCheckerboardSquareMm(Number(e.target.value))} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm" />
             </label>
             <div className="sm:col-span-2 flex items-end">
               <button onClick={downloadCheckerboardPdf} className="rounded border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm hover:bg-emerald-800/50">
@@ -177,7 +206,16 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
           </div>
           <p className="text-xs text-zinc-400">{checkerboardPdfStatus}</p>
           <label className="block text-xs">Stage Output Path
-            <input value={stageOutputIntrinsic || ""} onChange={(e) => setStageOutput("intrinsic", e.target.value)} className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1" />
+            <input
+              value={stageOutputPath}
+              onChange={(e) => setStageOutput(
+                "intrinsic",
+                typeof stageOutputIntrinsic === "object" && stageOutputIntrinsic !== null
+                  ? { ...stageOutputIntrinsic, intrinsicsPath: e.target.value }
+                  : e.target.value,
+              )}
+              className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1"
+            />
           </label>
           <div className="flex flex-wrap gap-2">
             <button onClick={captureIntrinsicSample} className="rounded border border-blue-700 bg-blue-900/40 px-3 py-2 text-sm hover:bg-blue-800/50">Capture Sample</button>
@@ -193,6 +231,36 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
             </button>
           </div>
           <p className="text-xs text-zinc-300">{intrinsicStatus} (Samples: {intrinsicSampleCount}/{minSamples})</p>
+          {(jobLoading || solvePercent > 0 || solveMeta) ? (
+            <div className="rounded border border-zinc-700 p-3 space-y-2 text-xs">
+              <div className="flex items-center justify-between text-zinc-300">
+                <span>Intrinsic solve progress</span>
+                <span>{Math.max(0, Math.min(100, Math.round(solvePercent || 0)))}%</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded bg-zinc-800">
+                <div
+                  className="h-full bg-cyan-500 transition-all duration-500"
+                  style={{ width: `${Math.max(0, Math.min(100, Number(solvePercent || 0)))}%` }}
+                />
+              </div>
+              <p className="text-zinc-400">{solvePhase || (jobLoading ? "Processing intrinsic calibration..." : "Idle")}</p>
+              {solveMeta ? (
+                <div className="grid gap-1 text-zinc-400 sm:grid-cols-2">
+                  <div>Session: {solveMeta.sessionId || "n/a"}</div>
+                  <div>Samples used: {Number.isFinite(solveMeta.sampleCount) ? solveMeta.sampleCount : intrinsicSampleCount}</div>
+                  <div>Duration: {Number.isFinite(solveMeta.durationMs) ? `${(solveMeta.durationMs / 1000).toFixed(1)}s` : "n/a"}</div>
+                  <div className="break-all">Python: {solveMeta.executable || "n/a"}</div>
+                  <div className="break-all sm:col-span-2">Auto-saved NPZ: {solveMeta.outputNpz || intrinsicsPath || "n/a"}</div>
+                </div>
+              ) : null}
+              {solveOutputLog ? (
+                <details>
+                  <summary className="cursor-pointer text-zinc-300">Solver output</summary>
+                  <pre className="mt-2 max-h-40 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-300">{solveOutputLog}</pre>
+                </details>
+              ) : null}
+            </div>
+          ) : null}
           <p className="text-xs text-zinc-400 break-all">Intrinsics: {intrinsicsPath || "not solved yet"}</p>
           {intrinsicSolveResult ? (
             <div className="rounded border border-zinc-700 p-3 space-y-2 text-xs">
@@ -293,6 +361,13 @@ export default function IntrinsicStepSection({ data, actions, refs, renderStageS
                 playsInline
                 muted
                 className="w-full max-h-[360px] rounded border border-zinc-700 object-contain bg-black"
+                onLoadedMetadata={() => {
+                  const canvas = overlayCanvasRef.current;
+                  const video = intrinsicVideoRef?.current;
+                  if (!canvas || !video) return;
+                  canvas.width = video.videoWidth || 960;
+                  canvas.height = video.videoHeight || 540;
+                }}
               />
               <canvas
                 ref={overlayCanvasRef}

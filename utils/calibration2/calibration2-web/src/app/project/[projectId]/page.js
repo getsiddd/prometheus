@@ -87,8 +87,8 @@ export default async function ProjectDetailPage({ params }) {
 
         <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
           <div className="flex flex-wrap gap-2">
-            <Link href="/project" className="rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm hover:bg-zinc-700/60">
-              Project Creation / Open Project
+            <Link href="/project" className="inline-flex items-center rounded border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm hover:bg-zinc-700/60">
+              ← Back to Projects
             </Link>
           </div>
           <p className="text-xs text-zinc-500 break-all">Shared DWG: {projectConfig.sharedDwgPath || "Not set"}</p>

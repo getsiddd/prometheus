@@ -182,7 +182,52 @@ function getCameraPresetAngles(cameraPosition) {
   };
 }
 
-export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldPoints = [], validationWorldPoints = [], title = "", cameraPosition = null, cameraIntrinsic = null }) {
+function closestPointOnSegment2D(px, py, ax, ay, bx, by) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const ab2 = abx * abx + aby * aby;
+  if (ab2 < 1e-9) {
+    return { x: ax, y: ay, t: 0, dist: Math.hypot(px - ax, py - ay) };
+  }
+  const tRaw = ((px - ax) * abx + (py - ay) * aby) / ab2;
+  const t = Math.max(0, Math.min(1, tRaw));
+  const x = ax + t * abx;
+  const y = ay + t * aby;
+  return { x, y, t, dist: Math.hypot(px - x, py - y) };
+}
+
+function toCanvasCoords(event, canvas) {
+  if (!canvas) return { x: 0, y: 0 };
+  const rect = canvas.getBoundingClientRect();
+  const sx = rect.width > 0 ? canvas.width / rect.width : 1;
+  const sy = rect.height > 0 ? canvas.height / rect.height : 1;
+  return {
+    x: (event.clientX - rect.left) * sx,
+    y: (event.clientY - rect.top) * sy,
+  };
+}
+
+function worldPointKey(world) {
+  if (!Array.isArray(world) || world.length < 3) return "";
+  return `${Number(world[0]).toFixed(6)}|${Number(world[1]).toFixed(6)}|${Number(world[2]).toFixed(6)}`;
+}
+
+function samePointKey(a, b) {
+  return worldPointKey(a?.world) === worldPointKey(b?.world);
+}
+
+export default function ProjectedCadViewer({
+  segments,
+  onPickWorld,
+  onPickSegment,
+  allowPointPick = true,
+  allowSegmentPick = true,
+  pickedWorldPoints = [],
+  validationWorldPoints = [],
+  title = "",
+  cameraPosition = null,
+  cameraIntrinsic = null,
+}) {
   const canvasRef = useRef(null);
   const [yaw, setYaw] = useState(35);
   const [pitch, setPitch] = useState(-28);
@@ -191,7 +236,11 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
   const [panY, setPanY] = useState(0);
   const dragRef = useRef({ dragging: false, mode: "rotate", x: 0, y: 0 });
   const projectedRef = useRef([]);
+  const projectedSegmentsRef = useRef([]);
   const [hoveredPoint, setHoveredPoint] = useState(null);
+  const [hoveredSegment, setHoveredSegment] = useState(null);
+  const hoveredPointRef = useRef(null);
+  const hoveredSegmentRef = useRef(null);
 
   const points = useMemo(() => {
     const all = [];
@@ -267,7 +316,8 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       return [sx2, sy2];
     };
 
-    const projected = [];
+    const pointMap = new Map();
+    const projectedSegments = [];
 
     const boxCorners = [
       [minX, minY, minZ],
@@ -325,15 +375,17 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
     for (const seg of segments) {
       const p1 = project(seg.a);
       const p2 = project(seg.b);
-      projected.push({ world: seg.a, screen: p1 });
-      projected.push({ world: seg.b, screen: p2 });
+      pointMap.set(worldPointKey(seg.a), { world: seg.a, screen: p1 });
+      pointMap.set(worldPointKey(seg.b), { world: seg.b, screen: p2 });
+      projectedSegments.push({ worldA: seg.a, worldB: seg.b, screenA: p1, screenB: p2 });
       ctx.beginPath();
       ctx.moveTo(p1[0], p1[1]);
       ctx.lineTo(p2[0], p2[1]);
       ctx.stroke();
     }
 
-    projectedRef.current = projected;
+    projectedRef.current = Array.from(pointMap.values());
+    projectedSegmentsRef.current = projectedSegments;
 
     if (pickedWorldPoints.length) {
       ctx.fillStyle = "#22c55e";
@@ -379,6 +431,24 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       ctx.arc(hp[0], hp[1], 6, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillText("preview", hp[0] + 8, hp[1] - 8);
+    }
+
+    if (hoveredSegment?.screenA && hoveredSegment?.screenB) {
+      ctx.save();
+      ctx.strokeStyle = "#facc15";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(hoveredSegment.screenA[0], hoveredSegment.screenA[1]);
+      ctx.lineTo(hoveredSegment.screenB[0], hoveredSegment.screenB[1]);
+      ctx.stroke();
+      ctx.fillStyle = "#fde047";
+      ctx.font = "bold 12px sans-serif";
+      ctx.fillText(
+        "line preview",
+        (hoveredSegment.screenA[0] + hoveredSegment.screenB[0]) * 0.5 + 8,
+        (hoveredSegment.screenA[1] + hoveredSegment.screenB[1]) * 0.5 - 8
+      );
+      ctx.restore();
     }
 
     // ---- Camera position overlay ----
@@ -487,7 +557,7 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       ctx.font = "13px sans-serif";
       ctx.fillText(title, 12, 22);
     }
-  }, [segments, yaw, pitch, points, zoom, panX, panY, pickedWorldPoints, validationWorldPoints, hoveredPoint, title, cameraPosition, cameraIntrinsic]);
+  }, [segments, yaw, pitch, points, zoom, panX, panY, pickedWorldPoints, validationWorldPoints, hoveredPoint, hoveredSegment, title, cameraPosition, cameraIntrinsic]);
 
   function onMouseDown(e) {
     const mode = e.button === 2 ? "pan" : "rotate";
@@ -520,6 +590,7 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
 
     if (dragRef.current.dragging) {
       setHoveredPoint(null);
+      setHoveredSegment(null);
     }
   }
 
@@ -554,12 +625,10 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
   }
 
   function onCanvasClick(e) {
-    if (typeof onPickWorld !== "function") {
+    if (typeof onPickWorld !== "function" && typeof onPickSegment !== "function") {
       return;
     }
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const { x, y } = toCanvasCoords(e, e.currentTarget);
 
     let best = null;
     let bestDist = Number.POSITIVE_INFINITY;
@@ -573,8 +642,43 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       }
     }
 
-    if (best && bestDist <= 24) {
+    let bestSegment = null;
+    let bestSegmentDist = Number.POSITIVE_INFINITY;
+    for (const item of projectedSegmentsRef.current) {
+      const cp = closestPointOnSegment2D(
+        x,
+        y,
+        item.screenA[0],
+        item.screenA[1],
+        item.screenB[0],
+        item.screenB[1]
+      );
+      if (cp.dist < bestSegmentDist) {
+        bestSegmentDist = cp.dist;
+        bestSegment = { ...item, ...cp };
+      }
+    }
+
+    if (allowSegmentPick && bestSegment && bestSegmentDist <= 12 && typeof onPickSegment === "function") {
+      onPickSegment([bestSegment.worldA, bestSegment.worldB]);
+      return;
+    }
+
+    if (allowPointPick && best && bestDist <= 32 && typeof onPickWorld === "function") {
       onPickWorld(best.world);
+      return;
+    }
+
+    if (allowPointPick && bestSegment && bestSegmentDist <= 12 && typeof onPickWorld === "function") {
+      const t = Number(bestSegment.t);
+      const a = bestSegment.worldA;
+      const b = bestSegment.worldB;
+      const world = [
+        Number(a[0]) + (Number(b[0]) - Number(a[0])) * t,
+        Number(a[1]) + (Number(b[1]) - Number(a[1])) * t,
+        Number(a[2]) + (Number(b[2]) - Number(a[2])) * t,
+      ];
+      onPickWorld(world);
     }
   }
 
@@ -584,9 +688,7 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       return;
     }
 
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const { x, y } = toCanvasCoords(e, e.currentTarget);
 
     let best = null;
     let bestDist = Number.POSITIVE_INFINITY;
@@ -600,10 +702,49 @@ export default function ProjectedCadViewer({ segments, onPickWorld, pickedWorldP
       }
     }
 
-    if (best && bestDist <= 26) {
-      setHoveredPoint(best);
-    } else {
+    let bestSegment = null;
+    let bestSegmentDist = Number.POSITIVE_INFINITY;
+    for (const item of projectedSegmentsRef.current) {
+      const cp = closestPointOnSegment2D(
+        x,
+        y,
+        item.screenA[0],
+        item.screenA[1],
+        item.screenB[0],
+        item.screenB[1]
+      );
+      if (cp.dist < bestSegmentDist) {
+        bestSegmentDist = cp.dist;
+        bestSegment = { ...item, ...cp };
+      }
+    }
+
+    if (allowPointPick && best && bestDist <= 26) {
+      if (!samePointKey(hoveredPointRef.current, best)) {
+        hoveredPointRef.current = best;
+        setHoveredPoint(best);
+      }
+    } else if (allowPointPick && hoveredPointRef.current && best && bestDist <= 34) {
+      // Hysteresis: keep current hover briefly while near threshold.
+    } else if (hoveredPointRef.current) {
+      hoveredPointRef.current = null;
       setHoveredPoint(null);
+    }
+
+    if (allowSegmentPick && bestSegment && bestSegmentDist <= 14) {
+      const prev = hoveredSegmentRef.current;
+      const changed = !prev
+        || worldPointKey(prev.worldA) !== worldPointKey(bestSegment.worldA)
+        || worldPointKey(prev.worldB) !== worldPointKey(bestSegment.worldB);
+      if (changed) {
+        hoveredSegmentRef.current = bestSegment;
+        setHoveredSegment(bestSegment);
+      }
+    } else if (allowSegmentPick && hoveredSegmentRef.current && bestSegment && bestSegmentDist <= 18) {
+      // Hysteresis for line hover.
+    } else if (hoveredSegmentRef.current) {
+      hoveredSegmentRef.current = null;
+      setHoveredSegment(null);
     }
   }
 

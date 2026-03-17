@@ -46,11 +46,24 @@ class FFmpegStream:
 
             print(f"[{self.camera['name']}] Using video file")
 
-            input_cmd = [
-                "-re",
-                "-stream_loop", "-1",
-                "-i", source,
-            ]
+            clip_start = self.camera.get("clip_start")
+            clip_end = self.camera.get("clip_end")
+
+            input_cmd = ["-re", "-stream_loop", "-1"]
+
+            if clip_start:
+                input_cmd += ["-ss", str(clip_start)]
+
+            if clip_end:
+                input_cmd += ["-to", str(clip_end)]
+
+            input_cmd += ["-i", source]
+
+            if clip_start or clip_end:
+                print(
+                    f"[{self.camera['name']}] Clip: "
+                    f"{clip_start or 'start'} → {clip_end or 'end'}"
+                )
 
         output_cmd = [
             "-an",

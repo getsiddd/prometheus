@@ -46,6 +46,7 @@ export async function POST(req) {
     }
 
     const files = (await fs.readdir(baseDir)).filter((name) => /\.(jpg|jpeg|png|bmp)$/i.test(name));
+    const fileName = path.basename(imagePath);
 
     return NextResponse.json({
       ok: true,
@@ -54,6 +55,12 @@ export async function POST(req) {
       savedPath: found ? imagePath : null,
       sampleCount: files.length,
       snapshotDataUrl: dataUrl,
+      sample: found
+        ? {
+            name: fileName,
+            dataUrl,
+          }
+        : null,
       detect: parsed,
       message: found
         ? "Checkerboard detected and webcam sample saved."

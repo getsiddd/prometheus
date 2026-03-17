@@ -5,11 +5,48 @@ const DEFAULT_COMPLETED_STAGES = {
   intrinsic: false,
   "ground-plane": false,
   "z-mapping": false,
+  "dlt-mapping": false,
+  validation: false,
   "cad-3d-dwg": false,
   extrinsic: false,
   sfm: false,
   overlay: false,
 };
+
+const DEFAULT_STEP_STATES = {
+  "plane-mapping": { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" },
+  "ground-plane": { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" },
+  "z-mapping": { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" },
+  "dlt-mapping": { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" },
+  "sfm-mapping": { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" },
+  validation: { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" },
+};
+
+function normalizeStepStateItem(item) {
+  if (!item || typeof item !== "object") {
+    return { status: "idle", progress: 0, logs: [], result: null, updatedAt: "" };
+  }
+  const progress = Number(item.progress);
+  return {
+    status: typeof item.status === "string" ? item.status : "idle",
+    progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
+    logs: Array.isArray(item.logs) ? item.logs.slice(-200).map((entry) => String(entry)) : [],
+    result: item.result && typeof item.result === "object" ? item.result : null,
+    updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : "",
+  };
+}
+
+function normalizeStepStatesMap(value) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    "plane-mapping": normalizeStepStateItem(input["plane-mapping"]),
+    "ground-plane": normalizeStepStateItem(input["ground-plane"]),
+    "z-mapping": normalizeStepStateItem(input["z-mapping"]),
+    "dlt-mapping": normalizeStepStateItem(input["dlt-mapping"]),
+    "sfm-mapping": normalizeStepStateItem(input["sfm-mapping"]),
+    validation: normalizeStepStateItem(input.validation),
+  };
+}
 
 function projectsDir() {
   return path.join(process.cwd(), "uploads", "projects");
@@ -157,6 +194,7 @@ function normalizeWorkspaceMap(rawWorkspaces, cameras, sharedDwgPath, sharedDwgF
       snapshotDataUrl: typeof workspace.snapshotDataUrl === "string" ? workspace.snapshotDataUrl : "",
       snapshotPath: typeof workspace.snapshotPath === "string" ? workspace.snapshotPath : "",
       segments: Array.isArray(workspace.segments) ? workspace.segments : [],
+      stepStates: normalizeStepStatesMap(workspace.stepStates),
       stageOutputs: workspace.stageOutputs && typeof workspace.stageOutputs === "object" ? workspace.stageOutputs : {},
       stageResolvedOutputs:
         workspace.stageResolvedOutputs && typeof workspace.stageResolvedOutputs === "object" ? workspace.stageResolvedOutputs : {},

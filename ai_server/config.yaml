@@ -7,6 +7,8 @@ system:
   # ----------------------------
   api_host: "0.0.0.0"
   api_port: 8000
+  alert_zmq_endpoint: "tcp://127.0.0.1:5555"
+  alarm_zmq_endpoint: "tcp://127.0.0.1:5556"
   
   token: ""
   MODEL_REPO: TommyNgx/YOLOv10-Fire-and-Smoke-Detection
@@ -24,6 +26,10 @@ system:
     fire: 0.3
     smoke: 0.5
     person: 0.6
+  detector_target_width: 1600
+  min_box_area_ratio: 0.00003
+  alert_cooldown: 1.0
+  track_timeout: 4.0
   
   motion_ratio_threshold: 0.01
   motion_hold_time: 2
@@ -39,30 +45,32 @@ cameras:
   #   url: rtsp://admin:asdf123%40@192.168.176.19:554/Streaming/Channels/101?transport=tcp
   #   active: true
 
-  - id: old-fdy-2
-    name: Old FDY 2
-    url: rtsp://admin:asdf123%40@192.168.176.24:554/Streaming/Channels/1001?transport=tcp
-    active: true
+  # - id: old-fdy-2
+  #   name: Old FDY 2
+  #   url: rtsp://admin:asdf123%40@192.168.176.24:554/Streaming/Channels/1001?transport=tcp
+  #   active: true
 
   # - id: poy-3
   #   name: POY 3
   #   url: rtsp://admin:asdf456%40@192.168.176.27:554/Streaming/Channels/2301?transport=tcp
   #   active: true
 
-  - id: poy-4
-    name: POY 4-7
-    url: rtsp://admin:asdf456%40@192.168.176.28:554/Streaming/Channels/701?transport=tcp
-    active: true
-
-  - id: poy-4-29
-    name: POY 4-29
-    url: rtsp://admin:asdf456%40@192.168.176.28:554/Streaming/Channels/2901?transport=tcp
-    active: true
-  
-  # - id: test-cam
-  #   name: Test
-  #   url: fire_video.mp4
+  # - id: poy-4
+  #   name: POY 4-7
+  #   url: rtsp://admin:asdf456%40@192.168.176.28:554/Streaming/Channels/701?transport=tcp
   #   active: true
+
+  # - id: poy-4-29
+  #   name: POY 4-29
+  #   url: rtsp://admin:asdf456%40@192.168.176.28:554/Streaming/Channels/2901?transport=tcp
+  #   active: true
+  
+  - id: test-cam
+    name: Test
+    url: fire_video.mp4
+    active: true
+    clip_start: "00:03:00"
+    clip_end: "00:06:00"
 
   # - id: cam3
   #   name: Gate 2

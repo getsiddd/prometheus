@@ -8,11 +8,13 @@ import pyttsx3
 import zmq
 import json
 import os
+import yaml
 
 # ==============================
 # CONFIG
 # ==============================
 SAVE_DIR = "alerts"
+CONFIG_FILE = "config.yaml"
 
 VOICE_TEMPLATE = "Warning. {label} detected on {camera}."
 MANUAL_MESSAGE = "Manual alarm activated."
@@ -132,12 +134,20 @@ def save_log(event):
 # ==============================
 def main():
 
+    config = {}
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE) as f:
+            config = yaml.safe_load(f) or {}
+
+    system_config = config.get("system", {})
+    alarm_zmq_endpoint = system_config.get("alarm_zmq_endpoint", "tcp://127.0.0.1:5556")
+
     context = zmq.Context()
     socket = context.socket(zmq.SUB)
-    socket.bind("tcp://*:5555")
+    socket.connect(alarm_zmq_endpoint)
     socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
-    print("[ALARM SERVICE] Listening on port 5555...")
+    print(f"[ALARM SERVICE] Subscribed to {alarm_zmq_endpoint}")
 
     # Start background threads
     threading.Thread(target=siren_loop, daemon=True).start()
@@ -150,8 +160,11 @@ def main():
 
         save_log(event)
 
-        label = event.get("label", "Unknown")
+        label = str(event.get("label", "Unknown"))
         camera = event.get("camera_name", "Camera")
+
+        if label.lower() != "fire":
+            continue
 
         message = VOICE_TEMPLATE.format(
             label=label.upper(),

@@ -12,8 +12,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-WIDTH = 1920
-HEIGHT = 1080
+WIDTH = 1280
+HEIGHT = 720
 SLOTS = 20
 HEADER_SIZE = 32
 FRAME_SIZE = WIDTH * HEIGHT * 3 // 2
@@ -29,6 +29,8 @@ app.add_middleware(
 )
 
 active_connections: Dict[str, List[WebSocket]] = {}
+ALERT_ZMQ_ENDPOINT = "tcp://127.0.0.1:5555"
+ALARM_ZMQ_ENDPOINT = "tcp://127.0.0.1:5556"
 
 # This will be injected from main.py
 ACTIVE_CAMERAS: List[str] = []
@@ -36,6 +38,16 @@ ACTIVE_CAMERAS: List[str] = []
 def set_active_cameras(camera_ids: List[str]):
     ACTIVE_CAMERAS.clear()
     ACTIVE_CAMERAS.extend(camera_ids)
+
+
+def set_alert_zmq_endpoint(endpoint: str):
+    global ALERT_ZMQ_ENDPOINT
+    ALERT_ZMQ_ENDPOINT = endpoint
+
+
+def set_alarm_zmq_endpoint(endpoint: str):
+    global ALARM_ZMQ_ENDPOINT
+    ALARM_ZMQ_ENDPOINT = endpoint
 
 
 # ==========================================================
@@ -187,15 +199,24 @@ async def websocket_alerts(websocket: WebSocket, cam_id: str):
 async def zmq_listener():
 
     context = zmq.asyncio.Context.instance()
-    socket = context.socket(zmq.SUB)
-    socket.bind("tcp://127.0.0.1:5555")
-    socket.setsockopt_string(zmq.SUBSCRIBE, "")
+    alert_sub = context.socket(zmq.SUB)
+    alert_sub.bind(ALERT_ZMQ_ENDPOINT)
+    alert_sub.setsockopt_string(zmq.SUBSCRIBE, "")
 
-    print("[ZMQ] Alert listener started")
+    alarm_pub = context.socket(zmq.PUB)
+    alarm_pub.bind(ALARM_ZMQ_ENDPOINT)
+
+    print(f"[ZMQ] Alert listener started on {ALERT_ZMQ_ENDPOINT}")
+    print(f"[ZMQ] Alarm relay started on {ALARM_ZMQ_ENDPOINT}")
 
     while True:
-        msg = await socket.recv_json()
+        msg = await alert_sub.recv_json()
         cam_id = msg.get("camera_id")
+
+        try:
+            alarm_pub.send_json(msg)
+        except:
+            pass
 
         if cam_id in active_connections:
             for ws in active_connections[cam_id]:

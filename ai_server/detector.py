@@ -15,7 +15,8 @@ class Detector:
         model_path=None,
         track_timeout=2.0,
         alert_cooldown=5.0,
-        min_box_area_ratio=0.0005  # filter tiny detections
+        min_box_area_ratio=0.0005,  # filter tiny detections
+        target_width=960
     ):
 
         if model_path is None:
@@ -34,6 +35,7 @@ class Detector:
         self.track_timeout = track_timeout
         self.alert_cooldown = alert_cooldown
         self.min_box_area_ratio = min_box_area_ratio
+        self.target_width = max(320, int(target_width))
 
         if alert_classes is None:
             alert_classes = ["fire", "smoke"]
@@ -44,6 +46,7 @@ class Detector:
 
         print(f"[Detector] Alert classes: {self.alert_classes}")
         print(f"[Detector] Class thresholds: {self.class_conf_thresholds}")
+        print(f"[Detector] Target width: {self.target_width}")
 
     # ===============================
     def resize_with_ratio(self, image, target_width):
@@ -53,9 +56,11 @@ class Detector:
         return cv2.resize(image, (target_width, new_h))
 
     # ===============================
-    def detect(self, frame, target_width=1280):
+    def detect(self, frame):
 
         now = time.time()
+
+        target_width = min(self.target_width, frame.shape[1])
 
         detect_frame = self.resize_with_ratio(frame, target_width)
 
@@ -89,23 +94,39 @@ class Detector:
             conf = float(box.conf[0])
             label = self.model.names[cls_id].lower()
 
-            if label not in self.alert_classes:
-                continue
-
-            # 🔥 Class specific threshold
             class_threshold = self.class_conf_thresholds.get(
                 label,
                 self.global_conf_threshold
             )
 
+            if conf >= class_threshold:
+                print(
+                    f"[DETECT] {label.upper()} | "
+                    f"Conf {conf:.2f} | "
+                    f"Threshold {class_threshold:.2f}"
+                )
+
+            if label not in self.alert_classes:
+                print(f"[DEBUG] {label.upper()} | Track {track_id} | SKIPPED — not in alert_classes")
+                continue
+
             if conf < class_threshold:
+                print(
+                    f"[DEBUG] {label.upper()} | Track {track_id} | "
+                    f"SKIPPED — conf {conf:.2f} < threshold {class_threshold:.2f}"
+                )
                 continue
 
             # 🧹 Filter very small boxes (removes noise)
             x1, y1, x2, y2 = box.xyxy[0]
             box_area = (x2 - x1) * (y2 - y1)
+            box_ratio = box_area / frame_area
 
-            if (box_area / frame_area) < self.min_box_area_ratio:
+            if box_ratio < self.min_box_area_ratio:
+                print(
+                    f"[DEBUG] {label.upper()} | Track {track_id} | "
+                    f"SKIPPED — box too small (ratio {box_ratio:.6f} < {self.min_box_area_ratio})"
+                )
                 continue
 
             if track_id not in self.track_memory:
@@ -132,9 +153,21 @@ class Detector:
             ):
                 memory["confirmed"] = True
 
-            if memory["confirmed"]:
-                if now - memory["last_alert_time"] > self.alert_cooldown:
+            print(
+                f"[DEBUG] {label.upper()} | Track {track_id} | "
+                f"Conf {conf:.2f} | AvgConf {memory['avg_conf']:.2f} | "
+                f"Frames {memory['frames']}/{self.alert_frames_required} | "
+                f"Confirmed {memory['confirmed']}"
+            )
 
+            if memory["confirmed"]:
+                cooldown_remaining = self.alert_cooldown - (now - memory["last_alert_time"])
+                if cooldown_remaining > 0:
+                    print(
+                        f"[DEBUG] {label.upper()} | Track {track_id} | "
+                        f"SKIPPED — cooldown {cooldown_remaining:.1f}s remaining"
+                    )
+                else:
                     alerts.append((label, memory["avg_conf"]))
 
                     print(

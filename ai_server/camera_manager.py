@@ -10,7 +10,6 @@ import numpy as np
 import zmq
 
 from detector import Detector
-from motion_detector import MotionDetector
 from ffmpeg_stream import FFmpegStream
 
 
@@ -43,6 +42,10 @@ class CameraWorker(threading.Thread):
             class_conf_thresholds=system_config.get("class_confidence_thresholds", {}),
             alert_frames_required=system_config.get("alert_frames_required", 5),
             alert_classes=system_config.get("alert_classes", ["fire", "smoke"]),
+            min_box_area_ratio=system_config.get("min_box_area_ratio", 0.0005),
+            alert_cooldown=system_config.get("alert_cooldown", 5.0),
+            track_timeout=system_config.get("track_timeout", 2.0),
+            target_width=system_config.get("detector_target_width", 960),
             model_path=model_path
         )
 
@@ -51,7 +54,7 @@ class CameraWorker(threading.Thread):
         # ===============================
         context = zmq.Context.instance()
         self.socket = context.socket(zmq.PUB)
-        self.socket.connect("tcp://127.0.0.1:5555")
+        self.socket.connect(system_config.get("alert_zmq_endpoint", "tcp://127.0.0.1:5555"))
         time.sleep(0.5)
 
         # ===============================
@@ -64,18 +67,6 @@ class CameraWorker(threading.Thread):
             fps=FPS,
             frame_size=FRAME_SIZE
         )
-
-        # ===============================
-        # MOTION DETECTOR
-        # ===============================
-        self.motion_detector = MotionDetector(
-            motion_ratio_threshold=system_config.get("motion_ratio_threshold", 0.01)
-        )
-
-        self.last_motion_time = 0
-        self.motion_hold_time = system_config.get("motion_hold_time", 2)
-
-        self.motion_active = False
 
         # ===============================
         # CONTROL FLAGS
@@ -196,25 +187,6 @@ class CameraWorker(threading.Thread):
                 continue
 
             frame = self.yuv420p_to_bgr(raw)
-
-            # ===============================
-            # MOTION CHECK
-            # ===============================
-
-            motion = self.motion_detector.detect(frame)
-
-            if motion:
-                self.last_motion_time = time.time()
-                if not self.motion_active:
-                    print(f"[{self.camera['name']}] Motion detected")
-                    self.motion_active = True
-
-            # If no recent motion → skip AI
-            if time.time() - self.last_motion_time > self.motion_hold_time:
-                if self.motion_active:
-                    print(f"[{self.camera['name']}] Motion stopped")
-                    self.motion_active = False
-                continue
 
             # ===============================
             # RUN AI

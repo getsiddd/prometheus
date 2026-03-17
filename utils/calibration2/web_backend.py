@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_kp.add_argument("--max-features", type=int, default=2000)
     p_kp.add_argument("--max-side", type=int, default=1280)
 
+    p_zmap = sub.add_parser("z-mapping-summary")
+    p_zmap.add_argument("--z-mappings-json", required=True)
+
+    p_h = sub.add_parser("solve-homography")
+    p_h.add_argument("--correspondences-json", required=True)
+
     return parser
 
 
@@ -188,6 +194,104 @@ def main() -> None:
             args.image,
             options={"max_features": args.max_features, "max_side": args.max_side},
         )
+        print(json.dumps({"ok": True, "result": result}))
+        return
+
+    if args.cmd == "z-mapping-summary":
+        records = load_json_arg(args.z_mappings_json, "--z-mappings-json")
+        if not isinstance(records, list):
+            raise RuntimeError("z-mappings-json must be a JSON array")
+
+        z_values = []
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            z_raw = item.get("zHeight")
+            try:
+                z = float(z_raw)
+            except Exception:
+                continue
+            z_values.append(z)
+
+        if not z_values:
+            result = {
+                "mode": "z_mapping_summary",
+                "count": 0,
+                "z_min": None,
+                "z_max": None,
+                "z_mean": None,
+                "z_median": None,
+            }
+        else:
+            sorted_vals = sorted(z_values)
+            n = len(sorted_vals)
+            mid = n // 2
+            median = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+            result = {
+                "mode": "z_mapping_summary",
+                "count": n,
+                "z_min": float(sorted_vals[0]),
+                "z_max": float(sorted_vals[-1]),
+                "z_mean": float(sum(sorted_vals) / n),
+                "z_median": float(median),
+            }
+
+        print(json.dumps({"ok": True, "result": result}))
+        return
+
+    if args.cmd == "solve-homography":
+        import cv2
+        import numpy as np
+
+        rows = load_json_arg(args.correspondences_json, "--correspondences-json")
+        if not isinstance(rows, list):
+            raise RuntimeError("correspondences-json must be a JSON array")
+
+        src = []
+        dst = []
+        used = []
+        for idx, item in enumerate(rows):
+            if not isinstance(item, dict):
+                continue
+            w = item.get("world")
+            p = item.get("pixel")
+            if not isinstance(w, list) or len(w) < 2:
+                continue
+            if not isinstance(p, list) or len(p) < 2:
+                continue
+            try:
+                wx = float(w[0])
+                wy = float(w[1])
+                px = float(p[0])
+                py = float(p[1])
+            except Exception:
+                continue
+            src.append([wx, wy])
+            dst.append([px, py])
+            used.append(idx)
+
+        if len(src) < 4:
+            raise RuntimeError("Need at least 4 valid correspondences for homography")
+
+        src_arr = np.array(src, dtype=np.float64).reshape(-1, 1, 2)
+        dst_arr = np.array(dst, dtype=np.float64).reshape(-1, 1, 2)
+        H, inlier_mask = cv2.findHomography(src_arr, dst_arr, method=cv2.RANSAC, ransacReprojThreshold=4.0)
+        if H is None:
+            raise RuntimeError("Homography solve failed")
+
+        proj = cv2.perspectiveTransform(src_arr, H)
+        residuals = np.linalg.norm(proj.reshape(-1, 2) - dst_arr.reshape(-1, 2), axis=1)
+        rmse = float(np.sqrt(np.mean(np.square(residuals)))) if len(residuals) > 0 else 0.0
+        inlier_count = int(np.sum(inlier_mask)) if inlier_mask is not None else len(src)
+
+        result = {
+            "mode": "planar_homography",
+            "homography": H.tolist(),
+            "input_count": len(src),
+            "inliers": inlier_count,
+            "rmse_px": rmse,
+            "used_indices": used,
+        }
         print(json.dumps({"ok": True, "result": result}))
         return
 

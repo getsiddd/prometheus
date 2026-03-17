@@ -217,10 +217,10 @@ export default function GroundPlaneStepSection({ data, actions, refs, renderStag
           key={`kp-${idx}`}
           cx={kp.x}
           cy={kp.y}
-          r="2.5"
-          fill="rgba(99,102,241,0.55)"
-          stroke="rgba(165,180,252,0.4)"
-          strokeWidth="0.5"
+          r="3.5"
+          fill="rgba(34,211,238,0.85)"
+          stroke="rgba(8,47,73,0.95)"
+          strokeWidth="0.8"
         />
       ))}
     </svg>

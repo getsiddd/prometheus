@@ -175,6 +175,7 @@ export function CalibrationConsole({
   const [liveKeypointsImageSize, setLiveKeypointsImageSize] = useState({ width: 1, height: 1 });
   const [liveKeypointsRunning, setLiveKeypointsRunning] = useState(false);
   const liveKeypointsPollRef = useRef(null);
+  const liveKeypointsLastTsRef = useRef(0);
   const autoGroundPrepRunningRef = useRef(false);
   const autoGroundPrepDoneKeyRef = useRef("");
   const [intrinsicSessionId, setIntrinsicSessionId] = useState("default");
@@ -2664,8 +2665,14 @@ export function CalibrationConsole({
     try {
       setLiveKeypointsRunning(true);
       if (!imageUrl) {
-        imageUrl = await captureSnapshotWeb();
-        if (!imageUrl) return;
+        if (sourceMode === "webcam") {
+          imageUrl = captureWebcamFrame();
+        } else {
+          imageUrl = captureRtspFrameFromLiveFeedElement();
+        }
+        if (!imageUrl) {
+          return false;
+        }
       }
       const res = await fetch("/api/calibration/web/extract-keypoints", {
         method: "POST",
@@ -2683,6 +2690,7 @@ export function CalibrationConsole({
           width: Number(result.image_width || 1),
           height: Number(result.image_height || 1),
         });
+        liveKeypointsLastTsRef.current = Date.now();
       }
       return true;
     } catch (_) {
@@ -2745,7 +2753,7 @@ export function CalibrationConsole({
     return () => clearTimeout(timer);
   }, [enabledStageSet, feedEnabled, sourceMode, sourceUrl, activeProjectCameraId]);
 
-  // Poll live features every 4 s while the ground-plane section is active
+  // Poll live features every 1.5 s while the ground-plane section is active
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const shouldPoll = enabledStageSet.has("ground-plane") && (feedEnabled || sourceMode === "webcam");
@@ -2754,7 +2762,7 @@ export function CalibrationConsole({
       if (!liveKeypointsRunning) {
         extractLiveKeypoints(null).catch(() => {});
       }
-    }, 4000);
+    }, 1500);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledStageSet, feedEnabled, sourceMode]);
@@ -3260,6 +3268,12 @@ export function CalibrationConsole({
     const h = el.naturalHeight || el.videoHeight || 0;
     if (w && h) {
       setSnapshotNaturalSize({ width: w, height: h });
+    }
+
+    const shouldExtract = enabledStageSet.has("ground-plane") && (feedEnabled || sourceMode === "webcam");
+    const elapsed = Date.now() - (liveKeypointsLastTsRef.current || 0);
+    if (shouldExtract && !liveKeypointsRunning && elapsed > 1200) {
+      extractLiveKeypoints(null).catch(() => {});
     }
   }
 

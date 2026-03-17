@@ -960,7 +960,8 @@ export function CalibrationConsole({
     return [u, v];
   }
 
-  async function autoPlaceMarkersFromSolvedCameras() {
+  async function autoPlaceMarkersFromSolvedCameras(options = {}) {
+    const silent = Boolean(options?.silent);
     try {
       if (!activeProjectCameraId) {
         throw new Error("Open/select a project camera first.");
@@ -1159,8 +1160,10 @@ export function CalibrationConsole({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Automatic marker placement failed";
-      setSolveStatus(message);
-      setProjectStatus(message);
+      if (!silent) {
+        setSolveStatus(message);
+        setProjectStatus(message);
+      }
       return false;
     }
   }
@@ -2731,7 +2734,7 @@ export function CalibrationConsole({
       const prepResults = await Promise.allSettled([
         detectAutoGroundPoints(frameUrl),
         extractLiveKeypoints(frameUrl),
-        autoPlaceMarkersFromSolvedCameras(),
+        autoPlaceMarkersFromSolvedCameras({ silent: true }),
       ]);
 
       const anySuccess = prepResults.some((result) => result.status === "fulfilled" && result.value === true);

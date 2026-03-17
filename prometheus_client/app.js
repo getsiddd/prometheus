@@ -127,7 +127,6 @@ function createCameraCard(cam) {
 function setStream(img, url) {
 
     let reconnectTimer = null;
-    let lastLoadTime = Date.now();
 
     function load() {
         img.src = url + "?t=" + Date.now();
@@ -141,14 +140,13 @@ function setStream(img, url) {
         }, 3000);
     }
 
-    img.onload = () => lastLoadTime = Date.now();
-    img.onerror = () => scheduleReconnect();
-
-    setInterval(() => {
-        if (Date.now() - lastLoadTime > 5000) {
-            load();
+    img.onload = () => {
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
         }
-    }, 4000);
+    };
+    img.onerror = () => scheduleReconnect();
 
     load();
 }

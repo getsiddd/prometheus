@@ -24,9 +24,9 @@ system:
     #- person
   class_confidence_thresholds:
     fire: 0.3
-    smoke: 0.5
+    smoke: 0.65
     person: 0.6
-  detector_target_width: 1600
+  detector_target_width: 640 #1600
   min_box_area_ratio: 0.00003
   alert_cooldown: 1.0
   track_timeout: 4.0
@@ -40,10 +40,10 @@ cameras:
   #   url: rtsp://admin:asdf123%40@192.168.176.202:554/Streaming/Channels/101?transport=tcp
   #   active: true
 
-  # - id: cam2
-  #   name: Main Gate
-  #   url: rtsp://admin:asdf123%40@192.168.176.19:554/Streaming/Channels/101?transport=tcp
-  #   active: true
+  - id: cam2
+    name: Main Gate
+    url: rtsp://admin:asdf123%40@192.168.176.19:554/Streaming/Channels/101?transport=tcp
+    active: true
 
   # - id: old-fdy-2
   #   name: Old FDY 2
@@ -65,12 +65,12 @@ cameras:
   #   url: rtsp://admin:asdf456%40@192.168.176.28:554/Streaming/Channels/2901?transport=tcp
   #   active: true
   
-  - id: test-cam
-    name: Test
-    url: fire_video.mp4
-    active: true
-    clip_start: "00:03:00"
-    clip_end: "00:06:00"
+  # - id: test-cam
+  #   name: Test
+  #   url: fire_video.mp4
+  #   active: true
+  #   clip_start: "00:03:00"
+  #   clip_end: "00:07:00"
 
   # - id: cam3
   #   name: Gate 2

@@ -1012,7 +1012,12 @@ export function CalibrationConsole({
         const workspace = workspaces[camera.id] || {};
         const synced = await captureSyncedSnapshotForCamera(camera, workspace);
         const snapshotPathValue = String(synced?.outputPath || workspace.snapshotPath || "").trim();
-        const snapshotDataUrlValue = String(synced?.snapshotDataUrl || "").trim();
+        const snapshotDataUrlValue = String(
+          synced?.snapshotDataUrl ||
+          workspace?.snapshotDataUrl ||
+          (camera.id === activeProjectCameraId ? snapshotDataUrl : "") ||
+          ""
+        ).trim();
         if (!snapshotPathValue) {
           continue;
         }
@@ -1080,7 +1085,15 @@ export function CalibrationConsole({
       }
 
       setCameraWorkspaces({ ...workspaces });
-      setSyncedMatchFrames(syncedPreviewFrames.sort((a, b) => String(a.cameraId).localeCompare(String(b.cameraId))));
+      setSyncedMatchFrames(
+        syncedPreviewFrames.sort((a, b) => {
+          const aActive = String(a.cameraId) === String(activeProjectCameraId);
+          const bActive = String(b.cameraId) === String(activeProjectCameraId);
+          if (aActive && !bActive) return -1;
+          if (!aActive && bActive) return 1;
+          return String(a.cameraId).localeCompare(String(b.cameraId));
+        })
+      );
       if (syncedPreviewFrames.length > 0) {
         setProjectStatus(`Synced preview frames captured: ${syncedPreviewFrames.length}. Rotate in Step 2 preview panel.`);
       }
@@ -2652,7 +2665,9 @@ export function CalibrationConsole({
     }
 
     const cameraSourceMode = String(workspace?.sourceMode || camera?.sourceMode || "rtsp");
-    const cameraSourceUrl = String(workspace?.sourceUrl || camera?.sourceUrl || "").trim();
+    const cameraSourceUrl = String(
+      workspace?.sourceUrl || camera?.sourceUrl || (cameraId === activeProjectCameraId ? sourceUrl : "") || ""
+    ).trim();
 
     try {
       if (cameraId === activeProjectCameraId) {
